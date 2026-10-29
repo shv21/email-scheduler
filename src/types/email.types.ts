@@ -5,14 +5,17 @@ export interface CreateEmailDTO {
   scheduledAt: string;
 }
 
+export type EmailStatusType = 'SCHEDULED' | 'PROCESSING' | 'SENT' | 'FAILED';
+
 export interface ScheduledEmail {
   id: string;
   recipient: string;
   subject: string;
   body: string;
-  scheduledAt: string;
-  status: 'scheduled' | 'sent' | 'failed';
-  createdAt: string;
+  scheduledAt: Date | string;
+  status: EmailStatusType;
+  createdAt: Date | string;
+  updatedAt?: Date | string;
 }
 
 export interface ValidationErrorDetail {
