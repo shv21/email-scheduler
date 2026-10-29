@@ -13,7 +13,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onDevLogin }) => {
     e.preventDefault();
     try {
       setLoading(true);
-      await onDevLogin(email || 'alex.developer@gmail.com');
+      await onDevLogin(email || 'oliver.brown@domain.io');
     } finally {
       setLoading(false);
     }

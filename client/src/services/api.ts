@@ -43,14 +43,22 @@ export const api = {
   },
 
   async devLogin(email?: string): Promise<User> {
-    const userEmail = email?.trim() || 'alex.developer@gmail.com';
+    const userEmail = email?.trim() || 'oliver.brown@domain.io';
+    const isOliver = userEmail === 'oliver.brown@domain.io';
     const namePrefix = userEmail.split('@')[0] || 'User';
+    const displayName = isOliver
+      ? 'Oliver Brown'
+      : namePrefix.charAt(0).toUpperCase() + namePrefix.slice(1);
+    const avatarUrl = isOliver
+      ? '/assets/oliver_brown.jpg'
+      : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
+
     const res = await request<User>('/auth/dev-login', {
       method: 'POST',
       body: JSON.stringify({
         email: userEmail,
-        displayName: namePrefix.charAt(0).toUpperCase() + namePrefix.slice(1),
-        avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+        displayName,
+        avatarUrl,
       }),
     });
     return res.user || (res.data as unknown as User)!;
