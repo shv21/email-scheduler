@@ -5,6 +5,7 @@ export const EMAIL_QUEUE_NAME = 'email-delivery-queue';
 
 export interface EmailJobData {
   emailId: string;
+  sender: string;
   recipient: string;
   subject: string;
   body: string;
@@ -34,7 +35,7 @@ emailQueue.on('error', (err) => {
 
 /**
  * Enqueues a delayed email sending job into Redis via BullMQ
- * @param data Email details
+ * @param data Email details including sender and emailId
  * @param delayMs Milliseconds to delay execution
  */
 export async function addEmailToQueue(
@@ -43,13 +44,17 @@ export async function addEmailToQueue(
 ): Promise<Job<EmailJobData>> {
   const safeDelay = Math.max(0, delayMs);
 
-  const job = await emailQueue.add(`send-email-${data.emailId}`, data, {
-    delay: safeDelay,
-    jobId: data.emailId, // ensures deduplication by emailId
-  });
+  const job = await emailQueue.add(
+    `send-email-${data.emailId}`,
+    data,
+    {
+      delay: safeDelay,
+      jobId: `${data.emailId}-${Date.now()}`,
+    }
+  );
 
   console.log(
-    `📥 Enqueued delayed job for email ${data.emailId} (Delay: ${safeDelay}ms / ${(safeDelay / 1000).toFixed(1)}s)`
+    `📥 Enqueued job for email ${data.emailId} | Sender: ${data.sender} | Delay: ${safeDelay}ms (~${Math.round(safeDelay / 1000)}s)`
   );
 
   return job;

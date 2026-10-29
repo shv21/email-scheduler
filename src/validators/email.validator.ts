@@ -2,6 +2,12 @@ import { z } from 'zod';
 import { CreateEmailDTO, ValidationErrorDetail } from '../types/email.types';
 
 export const createEmailSchema = z.object({
+  sender: z
+    .string()
+    .trim()
+    .email('sender must be a valid email address (e.g., sender@example.com)')
+    .optional()
+    .default(() => process.env.DEFAULT_SENDER || 'default-sender@example.com'),
   recipient: z
     .string({
       required_error: 'recipient is required',
@@ -42,12 +48,13 @@ export const createEmailSchema = z.object({
 
 /**
  * Normalizes common variations in JSON property naming
- * e.g., scheduled_at -> scheduledAt, recipientEmail -> recipient
+ * e.g., scheduled_at -> scheduledAt, recipientEmail -> recipient, from -> sender
  */
 export function normalizeEmailPayload(raw: Record<string, unknown>): Record<string, unknown> {
   if (!raw || typeof raw !== 'object') return {};
 
   return {
+    sender: raw.sender ?? raw.from ?? raw.senderEmail,
     recipient: raw.recipient ?? raw.recipientEmail ?? raw.to,
     subject: raw.subject,
     body: raw.body,
@@ -57,7 +64,7 @@ export function normalizeEmailPayload(raw: Record<string, unknown>): Record<stri
 
 export interface ValidationResult {
   isValid: boolean;
-  data?: CreateEmailDTO;
+  data?: CreateEmailDTO & { sender: string };
   errors?: ValidationErrorDetail[];
 }
 

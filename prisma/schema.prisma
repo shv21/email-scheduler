@@ -16,6 +16,7 @@ enum EmailStatus {
 
 model Email {
   id          String      @id @default(uuid())
+  sender      String      @default("default-sender@example.com")
   recipient   String
   subject     String
   body        String      @db.Text
@@ -25,5 +26,6 @@ model Email {
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
   @@index([scheduledAt, status])
+  @@index([sender])
   @@map("emails")
 }

@@ -56,3 +56,24 @@ export const createRedisClient = (): Redis => {
 
   return client;
 };
+
+let sharedRedisClient: Redis | null = null;
+
+/**
+ * Singleton Redis client for application data & rate limiting counters
+ */
+export const getSharedRedisClient = (): Redis => {
+  if (sharedRedisClient) return sharedRedisClient;
+
+  const options = getRedisConnectionOptions();
+  sharedRedisClient = new Redis({
+    ...options,
+    maxRetriesPerRequest: null,
+  });
+
+  sharedRedisClient.on('error', (err) => {
+    console.error('⚠️ [Redis Shared Client] Error:', err.message);
+  });
+
+  return sharedRedisClient;
+};

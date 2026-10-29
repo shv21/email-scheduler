@@ -1,4 +1,5 @@
 export interface CreateEmailDTO {
+  sender?: string;
   recipient: string;
   subject: string;
   body: string;
@@ -9,6 +10,7 @@ export type EmailStatusType = 'SCHEDULED' | 'PROCESSING' | 'SENT' | 'FAILED';
 
 export interface ScheduledEmail {
   id: string;
+  sender: string;
   recipient: string;
   subject: string;
   body: string;

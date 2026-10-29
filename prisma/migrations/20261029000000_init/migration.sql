@@ -4,6 +4,7 @@ CREATE TYPE "EmailStatus" AS ENUM ('SCHEDULED', 'PROCESSING', 'SENT', 'FAILED');
 -- CreateTable
 CREATE TABLE "emails" (
     "id" TEXT NOT NULL,
+    "sender" TEXT NOT NULL DEFAULT 'default-sender@example.com',
     "recipient" TEXT NOT NULL,
     "subject" TEXT NOT NULL,
     "body" TEXT NOT NULL,
@@ -17,3 +18,6 @@ CREATE TABLE "emails" (
 
 -- CreateIndex
 CREATE INDEX "emails_scheduled_at_status_idx" ON "emails"("scheduled_at", "status");
+
+-- CreateIndex
+CREATE INDEX "emails_sender_idx" ON "emails"("sender");

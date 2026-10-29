@@ -42,6 +42,7 @@ export async function getEmailTransporter(): Promise<Transporter> {
 }
 
 export interface SendEmailPayload {
+  sender?: string;
   recipient: string;
   subject: string;
   body: string;
@@ -56,11 +57,19 @@ export interface SendEmailResult {
  * Sends an email via Nodemailer using Ethereal.
  * Returns the message ID and web preview URL.
  */
-export async function sendEmail({ recipient, subject, body }: SendEmailPayload): Promise<SendEmailResult> {
+export async function sendEmail({
+  sender,
+  recipient,
+  subject,
+  body,
+}: SendEmailPayload): Promise<SendEmailResult> {
   const transporter = await getEmailTransporter();
+  const fromAddress = sender
+    ? `"${sender}" <scheduler@ethereal.email>`
+    : '"Email Scheduler" <scheduler@ethereal.email>';
 
   const info = await transporter.sendMail({
-    from: '"Email Scheduler" <scheduler@ethereal.email>',
+    from: fromAddress,
     to: recipient,
     subject,
     text: body,
@@ -72,7 +81,7 @@ export async function sendEmail({ recipient, subject, body }: SendEmailPayload):
         </div>
         <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
         <p style="font-size: 12px; color: #64748b; margin: 0;">
-          Scheduled & dispatched via <strong>Email Scheduler Backend</strong>
+          Sender: <strong>${sender || 'default'}</strong> | Dispatched via <strong>Email Scheduler Backend</strong>
         </p>
       </div>
     `,
@@ -82,6 +91,7 @@ export async function sendEmail({ recipient, subject, body }: SendEmailPayload):
 
   console.log(`====================================================`);
   console.log(`✉️ Email Dispatched to: ${recipient}`);
+  console.log(`👤 Sender: ${sender || 'default-sender'}`);
   console.log(`🆔 Message ID: ${info.messageId}`);
   if (previewUrl) {
     console.log(`🔗 Ethereal Preview URL: ${previewUrl}`);

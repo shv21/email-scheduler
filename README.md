@@ -1,15 +1,15 @@
 # 📬 Full-Stack Email Scheduler - Backend
 
-A production-ready email scheduling backend built with **Node.js**, **Express**, **TypeScript**, **PostgreSQL (Prisma)**, and **Redis (BullMQ)** with **Ethereal Email** dispatch.
+A production-ready email scheduling backend built with **Node.js**, **Express**, **TypeScript**, **PostgreSQL (Prisma)**, and **Redis (BullMQ)** with **Ethereal Email** dispatch and **Safe Redis Rate Limiting** with **Slack Alerts**.
 
 ---
 
-## 💡 Architecture & Flow (In Plain Words)
+## 💡 Architecture & Flow
 
 ```
 [Client / Postman]
        │
-       ▼ (1) POST /api/emails
+       ▼ (1) POST /api/emails (sender, recipient, subject, body, scheduledAt)
 [Express API & Zod Validator]
        │
        ▼ (2) Save email record (status: 'SCHEDULED')
@@ -20,18 +20,31 @@ A production-ready email scheduling backend built with **Node.js**, **Express**,
        │
        │ (4) When delay expires
        ▼
-[BullMQ Worker] ──► (5) Update DB (status: 'PROCESSING')
+[BullMQ Worker]
        │
-       ▼ (6) Send Email via Nodemailer (Ethereal SMTP)
+       ├──► (5) Check Per-Sender Hourly Limit in Redis:
+       │        Key: `ratelimit:sender:<sender>:<YYYY-MM-DD-HH>`
        │
-       ▼ (7) Update DB (status: 'SENT' or 'FAILED') + Log Preview URL
+       ├──► [RATE LIMIT EXCEEDED]:
+       │    ├── 1. Reschedule job in BullMQ to retry next hour (DO NOT DROP IT!)
+       │    ├── 2. Update DB status: 'SCHEDULED' (new target scheduledAt)
+       │    └── 3. Trigger Slack Alert ONCE per window (`SET alertKey 1 EX ttl NX`)
+       │
+       └──► [WITHIN LIMIT]:
+            ├── 1. Update DB status: 'PROCESSING'
+            ├── 2. Dispatch via Nodemailer (Ethereal SMTP)
+            ├── 3. Update DB status: 'SENT'
+            └── 4. Output Ethereal Web Preview URL
 ```
 
-1. **Client Request**: A client submits recipient email, subject, body, and a future `scheduledAt` timestamp to `POST /api/emails`.
-2. **Payload Validation**: Zod validates all fields (format, non-empty, future date).
-3. **Database Persistence**: The record is saved in PostgreSQL with status `SCHEDULED`.
-4. **Queue Enqueue**: BullMQ calculates `delay = scheduledAt - now` and places a delayed job into Redis.
-5. **Worker Execution**: When the scheduled time arrives, the background worker picks up the job, transitions status to `PROCESSING`, delivers the email through Ethereal SMTP, records status as `SENT`, and logs the Ethereal web preview URL.
+---
+
+## ⏱️ Rate Limiting & Slack Alert Mechanics (Phase 4)
+
+- **Storage**: Redis per-sender counter (`ratelimit:sender:<email>:<hourWindow>`) with automatic hour TTL.
+- **Configurable Limit**: Controlled via `HOURLY_EMAIL_LIMIT` in `.env` (default is `1` for immediate testing).
+- **Safe Rescheduling**: When a sender exceeds their hourly limit, the job is **not dropped** or failed. The worker calculates the milliseconds remaining until the next hourly window, updates `scheduledAt` in PostgreSQL, and re-enqueues the delayed job in BullMQ.
+- **Deduplicated Slack Alerts**: Redis atomic `SET ratelimit:alert:<sender>:<window> 1 EX <ttl> NX` guarantees that the Slack alert is fired **strictly once** per sender per hourly window. Subsequent rate-limited jobs in the same hour are rescheduled without spamming Slack.
 
 ---
 
@@ -42,7 +55,9 @@ A production-ready email scheduling backend built with **Node.js**, **Express**,
 - **Language**: TypeScript
 - **Database**: PostgreSQL with Prisma ORM
 - **Queue & Scheduler**: Redis + BullMQ (delayed jobs)
-- **Email Service**: Nodemailer with Ethereal Email (interactive web preview)
+- **Rate Limiting**: Redis atomic counters (`INCR`, `EXPIRE`, `SET ... NX`)
+- **Alerts**: Slack Webhook Notifications
+- **Email Service**: Nodemailer with Ethereal Email
 - **Validation**: Zod
 
 ---
@@ -54,11 +69,11 @@ email-scheduler/
 ├── prisma/
 │   ├── migrations/
 │   │   └── 20261029000000_init/
-│   │       └── migration.sql       # PostgreSQL migration
-│   └── schema.prisma               # Prisma schema (emails table & EmailStatus enum)
+│   │       └── migration.sql       # PostgreSQL migration (with sender column & index)
+│   └── schema.prisma               # Prisma schema definition
 ├── src/
 │   ├── config/
-│   │   └── redis.ts                # Redis connection config for BullMQ & health check
+│   │   └── redis.ts                # Redis connection config & singleton client
 │   ├── controllers/
 │   │   ├── email.controller.ts     # Validates, persists to DB, enqueues to Redis
 │   │   └── health.controller.ts    # Health check for Express, DB, and Redis
@@ -70,13 +85,17 @@ email-scheduler/
 │   │   ├── email.routes.ts         # /api/emails route
 │   │   └── health.routes.ts        # /health route
 │   ├── services/
-│   │   └── email.service.ts        # Nodemailer + Ethereal email transporter
+│   │   ├── email.service.ts        # Nodemailer + Ethereal email transporter
+│   │   ├── rate-limiter.service.ts # Redis per-sender hourly rate limiter
+│   │   └── slack.service.ts        # Slack webhook alert dispatcher
+│   ├── tests/
+│   │   └── test-rate-limiting.ts   # Phase 4 Rate Limiting & Slack alert verification test
 │   ├── types/
 │   │   └── email.types.ts          # DTOs and API types
 │   ├── validators/
-│   │   └── email.validator.ts      # Zod input schema
+│   │   └── email.validator.ts      # Zod input schema & normalization
 │   ├── workers/
-│   │   └── email.worker.ts         # BullMQ worker for delayed job processing
+│   │   └── email.worker.ts         # BullMQ worker with rate limiting & rescheduling
 │   ├── app.ts                      # Express app setup
 │   └── index.ts                    # Server & worker bootstrap + graceful shutdown
 ├── .env.example
@@ -90,7 +109,6 @@ email-scheduler/
 ## 🚀 Environment Setup & Run Commands
 
 ### 1. Configure `.env`
-Set your PostgreSQL and Redis connection strings in `.env`:
 ```env
 PORT=5000
 NODE_ENV=development
@@ -100,96 +118,68 @@ DATABASE_URL="postgresql://postgres:postgres@localhost:5432/email_scheduler?sche
 
 # Redis Connection (Local or Cloud like Upstash)
 REDIS_URL="redis://localhost:6379"
+
+# Rate Limiting (Emails per hour per sender)
+HOURLY_EMAIL_LIMIT=1
+DEFAULT_SENDER="sender@example.com"
+
+# Slack Webhook (Optional - logs to console if omitted)
+# SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
 ```
 
-> 💡 **Tip for quick testing without local installations**:
-> - **PostgreSQL**: You can use a free [Neon](https://neon.tech) or [Supabase](https://supabase.com) database URL.
-> - **Redis**: You can use a free [Upstash Redis](https://upstash.com) database URL (`rediss://default:...@...upstash.io:6379`).
-
-### 2. Apply Database Migration
+### 2. Run Database Migration
 ```bash
 npm run prisma:migrate
 ```
 
-### 3. Start Server & BullMQ Worker
+### 3. Start Development Server & Worker
 ```bash
 npm run dev
 ```
 
----
-
-## 📡 API Endpoints & Postman Testing
-
-### 1. Health & Infrastructure Status Check
-- **Method**: `GET`
-- **URL**: `http://localhost:5000/health`
-- **Response**:
-```json
-{
-  "status": "ok",
-  "service": "email-scheduler-api",
-  "uptimeSeconds": 14,
-  "checks": {
-    "database": "connected",
-    "redis": "connected"
-  },
-  "timestamp": "2026-10-29T05:25:00.000Z",
-  "environment": "development"
-}
+### 4. Run Rate Limiter Verification Test
+```bash
+npm run test:ratelimit
 ```
 
 ---
 
-### 2. Schedule Email (Save to DB + Enqueue in Redis)
+## 📮 Postman Test Guide (Two Quick Emails)
+
+Send two requests in quick succession with the **same sender**:
+
+### Request 1: First Email
 - **Method**: `POST`
 - **URL**: `http://localhost:5000/api/emails`
-- **Headers**:
-  - `Content-Type`: `application/json`
-- **Body** (`raw` -> `JSON`):
+- **Body**:
 ```json
 {
-  "recipient": "alex.dev@example.com",
-  "subject": "Delayed Sprint Reminder",
-  "body": "Hi Alex,\n\nThis is a delayed test email scheduled via BullMQ and Ethereal.",
-  "scheduledAt": "2026-11-01T10:00:00.000Z"
+  "sender": "marketing@acme.com",
+  "recipient": "client1@example.com",
+  "subject": "Email #1",
+  "body": "First email within hourly limit",
+  "scheduledAt": "2026-10-29T12:00:00.000Z"
 }
 ```
 
-#### Success Response (`201 Created`):
+### Request 2: Second Email (Hits Rate Limit)
+- **Method**: `POST`
+- **URL**: `http://localhost:5000/api/emails`
+- **Body**:
 ```json
 {
-  "success": true,
-  "message": "Email scheduled, persisted in PostgreSQL, and enqueued in Redis BullMQ queue",
-  "data": {
-    "id": "e8a946b2-658b-4972-bbcf-29bf8b5a03e1",
-    "recipient": "alex.dev@example.com",
-    "subject": "Delayed Sprint Reminder",
-    "body": "Hi Alex,\n\nThis is a delayed test email scheduled via BullMQ and Ethereal.",
-    "scheduledAt": "2026-11-01T10:00:00.000Z",
-    "status": "SCHEDULED",
-    "createdAt": "2026-10-29T05:25:10.123Z",
-    "updatedAt": "2026-10-29T05:25:10.123Z",
-    "job": {
-      "id": "e8a946b2-658b-4972-bbcf-29bf8b5a03e1",
-      "delayMs": 275689000,
-      "delaySeconds": 275689
-    }
-  }
+  "sender": "marketing@acme.com",
+  "recipient": "client2@example.com",
+  "subject": "Email #2",
+  "body": "Second email from same sender",
+  "scheduledAt": "2026-10-29T12:00:00.000Z"
 }
 ```
 
----
-
-## 📬 Worker Delivery & Ethereal Email Preview
-
-When the worker fires, it logs:
-```text
-⏳ [Worker] Processing email job e8a946b2-... for recipient: alex.dev@example.com
-====================================================
-✉️ Email Dispatched to: alex.dev@example.com
-🆔 Message ID: <18bad612-29cb-8f60-deb1-11e268ed9b0b@ethereal.email>
-🔗 Ethereal Preview URL: https://ethereal.email/message/auLYkLvYjsk9eNvcauLYlXOU4XPkrlPeAAAAAXlhajWLpnrxdcrQMufn2m4
-====================================================
-✅ [Worker] Successfully processed and marked email e8a946b2-... as SENT.
-```
-Opening the **Ethereal Preview URL** in any web browser lets you view the actual email.
+### What Happens in the Background:
+1. **Email #1**: Redis counter increments to `1` (which is $\le$ limit `1`). Passes check, transitions to `PROCESSING`, gets delivered via Ethereal, and marked `SENT`.
+2. **Email #2**: Redis counter increments to `2` (which exceeds limit `1`).
+   - The job is **not dropped**.
+   - Redis atomic `SET ... NX` detects this is the first rate limit hit this hour and **fires the Slack Alert**.
+   - The worker calculates the remaining seconds in the hour window and **reschedules the job** in BullMQ and PostgreSQL.
+   - Status in PostgreSQL remains `SCHEDULED` with the updated future retry time.

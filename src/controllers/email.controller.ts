@@ -10,7 +10,7 @@ import { addEmailToQueue } from '../queues/email.queue';
 
 /**
  * POST /api/emails
- * 1. Validates input payload
+ * 1. Validates input payload (including optional/normalized sender)
  * 2. Saves record to PostgreSQL (status: SCHEDULED)
  * 3. Enqueues delayed job to Redis via BullMQ
  */
@@ -31,13 +31,14 @@ export const createScheduledEmail = async (
       return;
     }
 
-    const { recipient, subject, body, scheduledAt } = validation.data;
+    const { sender, recipient, subject, body, scheduledAt } = validation.data;
 
     // 2. Persist record to PostgreSQL
     let createdEmail;
     try {
       createdEmail = await prisma.email.create({
         data: {
+          sender,
           recipient,
           subject,
           body,
@@ -70,6 +71,7 @@ export const createScheduledEmail = async (
       job = await addEmailToQueue(
         {
           emailId: createdEmail.id,
+          sender: createdEmail.sender,
           recipient: createdEmail.recipient,
           subject: createdEmail.subject,
           body: createdEmail.body,
@@ -99,6 +101,7 @@ export const createScheduledEmail = async (
       message: 'Email scheduled, persisted in PostgreSQL, and enqueued in Redis BullMQ queue',
       data: {
         id: createdEmail.id,
+        sender: createdEmail.sender,
         recipient: createdEmail.recipient,
         subject: createdEmail.subject,
         body: createdEmail.body,

@@ -3,6 +3,7 @@ import app from './app';
 import { startEmailWorker, stopEmailWorker } from './workers/email.worker';
 import prisma from './lib/prisma';
 import { emailQueue } from './queues/email.queue';
+import { getSharedRedisClient } from './config/redis';
 
 // Load environment variables
 dotenv.config();
@@ -18,6 +19,7 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Email Scheduler Backend is running on port ${PORT}`);
   console.log(`📡 Health Check: http://localhost:${PORT}/health`);
   console.log(`✉️  Schedule Email: POST http://localhost:${PORT}/api/emails`);
+  console.log(`⏱️  Hourly Email Limit: ${process.env.HOURLY_EMAIL_LIMIT ?? '1'} email(s)/hour per sender`);
   console.log(`⚙️  Environment: ${process.env.NODE_ENV ?? 'development'}`);
   console.log(`====================================================`);
 });
@@ -36,6 +38,12 @@ async function gracefulShutdown(signal: string) {
     await stopEmailWorker();
     await emailQueue.close();
     console.log('🔒 BullMQ worker and queue closed.');
+
+    // Close shared Redis client
+    try {
+      getSharedRedisClient().disconnect();
+      console.log('🔒 Shared Redis client closed.');
+    } catch {}
 
     // Disconnect Prisma
     await prisma.$disconnect();
