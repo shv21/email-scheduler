@@ -1,185 +1,221 @@
-# 📬 Full-Stack Email Scheduler - Backend
+# 📬 Full-Stack Email Scheduler & Dashboard
 
-A production-ready email scheduling backend built with **Node.js**, **Express**, **TypeScript**, **PostgreSQL (Prisma)**, and **Redis (BullMQ)** with **Ethereal Email** dispatch and **Safe Redis Rate Limiting** with **Slack Alerts**.
+A production-ready full-stack email scheduling platform built with:
+- **Backend**: Node.js, Express, TypeScript, Passport.js (Google OAuth 2.0), PostgreSQL (Prisma ORM), Redis (BullMQ delayed queues & per-sender rate limiting), Nodemailer (Ethereal SMTP).
+- **Frontend**: React 18, TypeScript, Tailwind CSS, Lucide icons, Vite.
 
 ---
 
-## 💡 Architecture & Flow
+## 🌟 Features Overview
+
+1. **Google OAuth 2.0 & Session Security**:
+   - Secure login via Google Accounts using Passport.js.
+   - HTTP-only session cookies with CSRF & credential protection.
+   - Protected email endpoints ensuring users only access their own scheduled emails.
+   - Development quick-login helper for instant local testing without live credentials.
+2. **Delayed Job Scheduling with BullMQ & Redis**:
+   - Background jobs delayed to dispatch at an exact future date and time.
+   - High-throughput queueing with exponential backoff on failures.
+3. **Safe Per-Sender Redis Rate Limiting**:
+   - Atomic per-sender hourly counters stored in Redis.
+   - Automatic rescheduling on limit exceed (jobs are never dropped).
+   - Exactly-once Slack alerts per hourly window.
+4. **Nodemailer + Ethereal Email Delivery**:
+   - Automated sandbox delivery with instant web preview URLs.
+5. **Modern React Dashboard**:
+   - Responsive UI with Tabs for Scheduled and Sent emails.
+   - Live polling for real-time status transitions (`SCHEDULED` ➔ `PROCESSING` ➔ `SENT`).
+   - Compose modal with email format validation and quick time presets (+5m, +30m, +1h, tomorrow).
+
+---
+
+## 📐 Architecture & Flow
 
 ```
-[Client / Postman]
+[React Dashboard (Vite: 5173)]
        │
-       ▼ (1) POST /api/emails (sender, recipient, subject, body, scheduledAt)
-[Express API & Zod Validator]
+       ├──► (1) GET /api/auth/google ──► [Google Accounts Consent]
+       │                                         │
+       ├──◄ (2) Callback with session cookie ────┘
        │
-       ▼ (2) Save email record (status: 'SCHEDULED')
-[PostgreSQL Database (Prisma)]
+       ├──► (3) GET /api/auth/me (Returns user profile: name, email, avatar)
        │
-       ▼ (3) Enqueue delayed job (delayMs = scheduledAt - now)
-[Redis (BullMQ Queue: email-delivery-queue)]
+       ├──► (4) POST /api/emails (Compose email with future scheduledAt)
+       │          │
+       │          ▼ [Express Backend: 5000]
+       │          ├── 1. requireAuth check (validates session cookie)
+       │          ├── 2. Save record to PostgreSQL via Prisma (associated with userId)
+       │          └── 3. Enqueue delayed job into Redis BullMQ
        │
-       │ (4) When delay expires
-       ▼
-[BullMQ Worker]
-       │
-       ├──► (5) Check Per-Sender Hourly Limit in Redis:
-       │        Key: `ratelimit:sender:<sender>:<YYYY-MM-DD-HH>`
-       │
-       ├──► [RATE LIMIT EXCEEDED]:
-       │    ├── 1. Reschedule job in BullMQ to retry next hour (DO NOT DROP IT!)
-       │    ├── 2. Update DB status: 'SCHEDULED' (new target scheduledAt)
-       │    └── 3. Trigger Slack Alert ONCE per window (`SET alertKey 1 EX ttl NX`)
-       │
-       └──► [WITHIN LIMIT]:
-            ├── 1. Update DB status: 'PROCESSING'
-            ├── 2. Dispatch via Nodemailer (Ethereal SMTP)
-            ├── 3. Update DB status: 'SENT'
-            └── 4. Output Ethereal Web Preview URL
+       └──► (5) When delay expires:
+                  ▼ [BullMQ Background Worker]
+                  ├── Check Redis Rate Limit
+                  ├── If rate limited: reschedule job & trigger Slack alert once
+                  └── If allowed: dispatch via Ethereal SMTP & mark SENT in DB
 ```
 
 ---
 
-## ⏱️ Rate Limiting & Slack Alert Mechanics (Phase 4)
-
-- **Storage**: Redis per-sender counter (`ratelimit:sender:<email>:<hourWindow>`) with automatic hour TTL.
-- **Configurable Limit**: Controlled via `HOURLY_EMAIL_LIMIT` in `.env` (default is `1` for immediate testing).
-- **Safe Rescheduling**: When a sender exceeds their hourly limit, the job is **not dropped** or failed. The worker calculates the milliseconds remaining until the next hourly window, updates `scheduledAt` in PostgreSQL, and re-enqueues the delayed job in BullMQ.
-- **Deduplicated Slack Alerts**: Redis atomic `SET ratelimit:alert:<sender>:<window> 1 EX <ttl> NX` guarantees that the Slack alert is fired **strictly once** per sender per hourly window. Subsequent rate-limited jobs in the same hour are rescheduled without spamming Slack.
-
----
-
-## 🛠️ Tech Stack
-
-- **Runtime**: Node.js (v18+)
-- **Framework**: Express.js
-- **Language**: TypeScript
-- **Database**: PostgreSQL with Prisma ORM
-- **Queue & Scheduler**: Redis + BullMQ (delayed jobs)
-- **Rate Limiting**: Redis atomic counters (`INCR`, `EXPIRE`, `SET ... NX`)
-- **Alerts**: Slack Webhook Notifications
-- **Email Service**: Nodemailer with Ethereal Email
-- **Validation**: Zod
-
----
-
-## 📂 Project Structure
+## 🛠️ Project Structure
 
 ```text
 email-scheduler/
+├── client/                        # ⚡ React + TypeScript + Tailwind Frontend
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── Header.tsx         # User profile, avatar, compose button, logout
+│   │   │   ├── LoginView.tsx      # Google OAuth login + Quick Dev Login
+│   │   │   ├── StatsCards.tsx     # Overview metrics (Scheduled, Sent, Failed)
+│   │   │   ├── EmailTable.tsx     # Filterable tabs (Scheduled vs Sent) & search
+│   │   │   └── ComposeModal.tsx   # Modal with validation & quick presets
+│   │   ├── services/
+│   │   │   └── api.ts             # Fetch client with credentials included
+│   │   ├── types.ts               # Shared frontend TypeScript interfaces
+│   │   ├── App.tsx                # Main state & polling coordinator
+│   │   └── main.tsx               # Client entrypoint
+│   ├── index.html
+│   ├── tailwind.config.js
+│   └── vite.config.ts             # Proxy /api to backend:5000
 ├── prisma/
-│   ├── migrations/
-│   │   └── 20261029000000_init/
-│   │       └── migration.sql       # PostgreSQL migration (with sender column & index)
-│   └── schema.prisma               # Prisma schema definition
-├── src/
+│   ├── migrations/                # PostgreSQL migration SQL (users + emails)
+│   └── schema.prisma              # User & Email models with relations
+├── src/                           # ⚡ Express TypeScript Backend
 │   ├── config/
-│   │   └── redis.ts                # Redis connection config & singleton client
+│   │   ├── passport.ts            # Google OAuth Strategy & session serialization
+│   │   └── redis.ts               # Redis connection & singleton client
 │   ├── controllers/
-│   │   ├── email.controller.ts     # Validates, persists to DB, enqueues to Redis
-│   │   └── health.controller.ts    # Health check for Express, DB, and Redis
-│   ├── lib/
-│   │   └── prisma.ts               # PrismaClient singleton
+│   │   ├── auth.controller.ts     # User info, logout, and dev login
+│   │   ├── email.controller.ts    # Protected email creation and listing
+│   │   └── health.controller.ts   # DB and Redis health monitor
+│   ├── middlewares/
+│   │   └── auth.middleware.ts     # requireAuth session guard
 │   ├── queues/
-│   │   └── email.queue.ts          # BullMQ Queue instance & enqueue helper
+│   │   └── email.queue.ts         # BullMQ queue & delay calculation
 │   ├── routes/
-│   │   ├── email.routes.ts         # /api/emails route
-│   │   └── health.routes.ts        # /health route
+│   │   ├── auth.routes.ts         # /api/auth endpoints
+│   │   ├── email.routes.ts        # Protected /api/emails endpoints
+│   │   └── health.routes.ts       # /health endpoint
 │   ├── services/
-│   │   ├── email.service.ts        # Nodemailer + Ethereal email transporter
-│   │   ├── rate-limiter.service.ts # Redis per-sender hourly rate limiter
-│   │   └── slack.service.ts        # Slack webhook alert dispatcher
+│   │   ├── email.service.ts       # Nodemailer Ethereal SMTP transporter
+│   │   ├── rate-limiter.service.ts# Redis per-sender hourly rate limiter
+│   │   └── slack.service.ts       # Slack webhook alert dispatcher
 │   ├── tests/
-│   │   └── test-rate-limiting.ts   # Phase 4 Rate Limiting & Slack alert verification test
-│   ├── types/
-│   │   └── email.types.ts          # DTOs and API types
-│   ├── validators/
-│   │   └── email.validator.ts      # Zod input schema & normalization
-│   ├── workers/
-│   │   └── email.worker.ts         # BullMQ worker with rate limiting & rescheduling
-│   ├── app.ts                      # Express app setup
-│   └── index.ts                    # Server & worker bootstrap + graceful shutdown
+│   │   ├── test-auth.ts           # Automated auth & ownership tests
+│   │   └── test-rate-limiting.ts  # Automated rate limit verification
+│   ├── app.ts                     # Express setup, sessions, CORS, Passport
+│   └── index.ts                   # Backend bootstrap & worker startup
 ├── .env.example
 ├── package.json
-├── tsconfig.json
 └── README.md
 ```
 
 ---
 
-## 🚀 Environment Setup & Run Commands
+## 🔑 Google Cloud Console Setup Guide
 
-### 1. Configure `.env`
-```env
-PORT=5000
-NODE_ENV=development
+To enable live Google OAuth:
 
-# PostgreSQL Connection (Local or Cloud like Neon/Supabase)
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/email_scheduler?schema=public"
+1. Navigate to the [Google Cloud Console](https://console.cloud.google.com/).
+2. Create or select a project.
+3. Open **APIs & Services** ➔ **OAuth consent screen**:
+   - User Type: **External**.
+   - App Name: `Email Scheduler`.
+   - Add scopes: `.../auth/userinfo.email` and `.../auth/userinfo.profile`.
+   - Add your test Google account email under **Test users**.
+4. Open **APIs & Services** ➔ **Credentials**:
+   - Click **Create Credentials** ➔ **OAuth client ID**.
+   - Application type: **Web application**.
+   - Name: `Email Scheduler Web Client`.
+   - **Authorized JavaScript origins**:
+     - `http://localhost:5173`
+     - `http://localhost:5000`
+   - **Authorized redirect URIs**:
+     - `http://localhost:5000/api/auth/google/callback`
+5. Copy your **Client ID** and **Client Secret** into your `.env` file:
+   ```env
+   GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
+   GOOGLE_CLIENT_SECRET="your-client-secret"
+   GOOGLE_CALLBACK_URL="http://localhost:5000/api/auth/google/callback"
+   ```
 
-# Redis Connection (Local or Cloud like Upstash)
-REDIS_URL="redis://localhost:6379"
+---
 
-# Rate Limiting (Emails per hour per sender)
-HOURLY_EMAIL_LIMIT=1
-DEFAULT_SENDER="sender@example.com"
+## 🚀 Exact Installation & Run Commands
 
-# Slack Webhook (Optional - logs to console if omitted)
-# SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+### 1. Install Dependencies
+```bash
+# Install backend dependencies
+npm install
+
+# Install client dependencies
+npm --prefix client install
 ```
 
-### 2. Run Database Migration
+### 2. Configure Environment (`.env`)
+```bash
+cp .env.example .env
+```
+Ensure your `.env` contains:
+- `DATABASE_URL` (PostgreSQL connection string)
+- `REDIS_URL` (Redis connection string, e.g. `redis://localhost:6379`)
+- `CLIENT_URL="http://localhost:5173"`
+- `SESSION_SECRET="your-secure-session-secret"`
+
+### 3. Run Database Migrations
 ```bash
 npm run prisma:migrate
+npm run prisma:generate
 ```
 
-### 3. Start Development Server & Worker
+### 4. Start the Application
+Open two terminal windows:
+
+**Terminal 1 (Backend Server + BullMQ Worker)**:
 ```bash
 npm run dev
 ```
+*Backend runs on `http://localhost:5000`.*
 
-### 4. Run Rate Limiter Verification Test
+**Terminal 2 (React Dashboard)**:
 ```bash
+npm run client:dev
+```
+*React frontend runs on `http://localhost:5173`.*
+
+---
+
+## 🧪 Automated Testing Commands
+
+Verify features independently with built-in test suites:
+
+```bash
+# 1. Test Google OAuth, Sessions, requireAuth protection, and Logout:
+npm run test:auth
+
+# 2. Test Safe Redis Rate Limiter, Rescheduling, and Slack Alert Deduplication:
 npm run test:ratelimit
+
+# 3. Test TypeScript compilation for Backend and Frontend:
+npm run typecheck
+npm run client:build
 ```
 
 ---
 
-## 📮 Postman Test Guide (Two Quick Emails)
+## 📮 API Endpoints Reference
 
-Send two requests in quick succession with the **same sender**:
+### Authentication Endpoints
+| Method | Route | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/auth/google` | Initiates Google OAuth consent screen | No |
+| `GET` | `/api/auth/google/callback` | Google OAuth callback (sets session cookie) | No |
+| `GET` | `/api/auth/me` | Returns current user profile | Yes |
+| `POST` | `/api/auth/logout` | Clears session cookie and logs out | Yes |
+| `POST` | `/api/auth/dev-login` | Quick development login (bypasses consent) | No (Dev only) |
 
-### Request 1: First Email
-- **Method**: `POST`
-- **URL**: `http://localhost:5000/api/emails`
-- **Body**:
-```json
-{
-  "sender": "marketing@acme.com",
-  "recipient": "client1@example.com",
-  "subject": "Email #1",
-  "body": "First email within hourly limit",
-  "scheduledAt": "2026-10-29T12:00:00.000Z"
-}
-```
-
-### Request 2: Second Email (Hits Rate Limit)
-- **Method**: `POST`
-- **URL**: `http://localhost:5000/api/emails`
-- **Body**:
-```json
-{
-  "sender": "marketing@acme.com",
-  "recipient": "client2@example.com",
-  "subject": "Email #2",
-  "body": "Second email from same sender",
-  "scheduledAt": "2026-10-29T12:00:00.000Z"
-}
-```
-
-### What Happens in the Background:
-1. **Email #1**: Redis counter increments to `1` (which is $\le$ limit `1`). Passes check, transitions to `PROCESSING`, gets delivered via Ethereal, and marked `SENT`.
-2. **Email #2**: Redis counter increments to `2` (which exceeds limit `1`).
-   - The job is **not dropped**.
-   - Redis atomic `SET ... NX` detects this is the first rate limit hit this hour and **fires the Slack Alert**.
-   - The worker calculates the remaining seconds in the hour window and **reschedules the job** in BullMQ and PostgreSQL.
-   - Status in PostgreSQL remains `SCHEDULED` with the updated future retry time.
+### Email Endpoints
+| Method | Route | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/emails` | Schedules a new email for current user | Yes |
+| `GET` | `/api/emails` | Lists current user's emails (`?status=...`) | Yes |
+| `GET` | `/api/emails/:id` | Returns single email belonging to user | Yes |

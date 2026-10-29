@@ -1,9 +1,16 @@
 import { Router } from 'express';
-import { createScheduledEmail } from '../controllers/email.controller';
+import {
+  createScheduledEmail,
+  getUserEmails,
+  getEmailById,
+} from '../controllers/email.controller';
+import { requireAuth } from '../middlewares/auth.middleware';
 
 const router = Router();
 
-// POST /api/emails
-router.post('/emails', createScheduledEmail);
+// Protect all email endpoints so users access only their own emails
+router.post('/emails', requireAuth, createScheduledEmail);
+router.get('/emails', requireAuth, getUserEmails);
+router.get('/emails/:id', requireAuth, getEmailById);
 
 export default router;

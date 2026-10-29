@@ -3,16 +3,19 @@ import { validateEmailPayload } from '../validators/email.validator';
 import {
   ApiErrorResponse,
   ApiSuccessResponse,
+  ScheduledEmail,
   ScheduledEmailWithJob,
+  EmailStatusType,
 } from '../types/email.types';
 import prisma from '../lib/prisma';
 import { addEmailToQueue } from '../queues/email.queue';
 
 /**
  * POST /api/emails
- * 1. Validates input payload (including optional/normalized sender)
- * 2. Saves record to PostgreSQL (status: SCHEDULED)
- * 3. Enqueues delayed job to Redis via BullMQ
+ * 1. Validates input payload
+ * 2. Associates with authenticated user if present
+ * 3. Saves record to PostgreSQL (status: SCHEDULED)
+ * 4. Enqueues delayed job to Redis via BullMQ
  */
 export const createScheduledEmail = async (
   req: Request,
@@ -31,19 +34,24 @@ export const createScheduledEmail = async (
       return;
     }
 
-    const { sender, recipient, subject, body, scheduledAt } = validation.data;
+    const { recipient, subject, body, scheduledAt } = validation.data;
+
+    // Use logged in user's email as sender if authenticated, otherwise use body sender
+    const userId = req.user?.id || null;
+    const effectiveSender = req.user?.email || validation.data.sender;
 
     // 2. Persist record to PostgreSQL
     let createdEmail;
     try {
       createdEmail = await prisma.email.create({
         data: {
-          sender,
+          sender: effectiveSender,
           recipient,
           subject,
           body,
           scheduledAt: new Date(scheduledAt),
           status: 'SCHEDULED',
+          userId,
         },
       });
     } catch (dbError: unknown) {
@@ -109,6 +117,7 @@ export const createScheduledEmail = async (
         status: createdEmail.status,
         createdAt: createdEmail.createdAt,
         updatedAt: createdEmail.updatedAt,
+        userId: createdEmail.userId,
         job: {
           id: String(job.id),
           delayMs,
@@ -127,6 +136,105 @@ export const createScheduledEmail = async (
           message: error instanceof Error ? error.message : 'Unknown server error',
         },
       ],
+    });
+  }
+};
+
+/**
+ * GET /api/emails
+ * Lists emails belonging to the authenticated user.
+ * Supports optional ?status=SCHEDULED | SENT | PROCESSING | FAILED query param.
+ */
+export const getUserEmails = async (
+  req: Request,
+  res: Response<ApiSuccessResponse<ScheduledEmail[]> | ApiErrorResponse>
+): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    const statusQuery = req.query.status as EmailStatusType | undefined;
+
+    const whereClause: {
+      userId?: string;
+      status?: EmailStatusType;
+    } = {};
+
+    if (userId) {
+      whereClause.userId = userId;
+    }
+
+    if (statusQuery) {
+      whereClause.status = statusQuery;
+    }
+
+    try {
+      const emails = await prisma.email.findMany({
+        where: whereClause,
+        orderBy: { scheduledAt: 'desc' },
+      });
+
+      res.status(200).json({
+        success: true,
+        count: emails.length,
+        data: emails,
+      });
+    } catch (dbErr: unknown) {
+      console.warn('⚠️ Could not query database for user emails:', dbErr);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve emails from database',
+        errors: [
+          {
+            field: 'database',
+            message: dbErr instanceof Error ? dbErr.message : 'Database error',
+          },
+        ],
+      });
+    }
+  } catch (error: unknown) {
+    console.error('❌ Unexpected error in getUserEmails:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve user emails',
+    });
+  }
+};
+
+/**
+ * GET /api/emails/:id
+ * Fetches a single email by ID, ensuring ownership by the authenticated user.
+ */
+export const getEmailById = async (
+  req: Request,
+  res: Response<ApiSuccessResponse<ScheduledEmail> | ApiErrorResponse>
+): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    const email = await prisma.email.findFirst({
+      where: {
+        id,
+        ...(userId ? { userId } : {}),
+      },
+    });
+
+    if (!email) {
+      res.status(404).json({
+        success: false,
+        message: 'Email not found or you do not have permission to view it',
+      });
+      return;
+    }
+
+    res.status(200).json({
+      success: true,
+      data: email,
+    });
+  } catch (err: unknown) {
+    console.error('❌ Error in getEmailById:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch email record',
     });
   }
 };

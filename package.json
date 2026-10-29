@@ -12,7 +12,10 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
-    "test:ratelimit": "tsx src/tests/test-rate-limiting.ts"
+    "test:ratelimit": "tsx src/tests/test-rate-limiting.ts",
+    "client:dev": "npm --prefix client run dev",
+    "client:build": "npm --prefix client run build",
+    "test:auth": "tsx src/tests/test-auth.ts"
   },
   "keywords": [
     "email-scheduler",
@@ -22,25 +25,37 @@
     "prisma",
     "postgresql",
     "bullmq",
-    "redis"
+    "redis",
+    "passport",
+    "google-oauth",
+    "react",
+    "tailwind"
   ],
   "author": "shv21",
   "license": "ISC",
   "dependencies": {
     "@prisma/client": "^6.4.1",
     "bullmq": "^6.5.1",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "express-session": "^1.19.0",
     "ioredis": "^6.0.0",
     "nodemailer": "^10.2.1",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/express-session": "^1.19.0",
     "@types/node": "^22.13.5",
     "@types/nodemailer": "^8.0.2",
+    "@types/passport": "^1.0.17",
+    "@types/passport-google-oauth20": "^2.0.17",
     "prisma": "^6.4.1",
     "rimraf": "^6.0.1",
     "tsx": "^4.19.3",

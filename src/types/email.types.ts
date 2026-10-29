@@ -18,6 +18,7 @@ export interface ScheduledEmail {
   status: EmailStatusType;
   createdAt: Date | string;
   updatedAt?: Date | string;
+  userId?: string | null;
 }
 
 export interface ScheduledEmailWithJob extends ScheduledEmail {
@@ -35,8 +36,9 @@ export interface ValidationErrorDetail {
 
 export interface ApiSuccessResponse<T> {
   success: true;
-  message: string;
+  message?: string;
   data: T;
+  count?: number;
 }
 
 export interface ApiErrorResponse {

@@ -1,36 +1,77 @@
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import session from 'express-session';
+import cookieParser from 'cookie-parser';
+import passport from 'passport';
+import configurePassport from './config/passport';
+import authRoutes from './routes/auth.routes';
 import emailRoutes from './routes/email.routes';
 import healthRoutes from './routes/health.routes';
 
 const app: Application = express();
 
-// Global Middlewares
-app.use(cors());
+// 1. Initialize Passport Strategies
+configurePassport();
+
+// 2. Global CORS Configuration (Supporting credentials for session cookies)
+const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+app.use(
+  cors({
+    origin: CLIENT_URL,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+  })
+);
+
+// 3. Request Parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
-// Friendly root route
+// 4. Secure Session Management
+const isProduction = process.env.NODE_ENV === 'production';
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || 'email-scheduler-session-secret-change-in-production',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true, // Prevents XSS cookie theft
+      secure: isProduction, // HTTPS only in production
+      sameSite: isProduction ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    },
+  })
+);
+
+// 5. Passport Session Middleware
+app.use(passport.initialize());
+app.use(passport.session());
+
+// 6. Friendly root route
 app.get('/', (_req: Request, res: Response) => {
   res.status(200).json({
     name: 'Email Scheduler API',
-    version: '1.0.0',
-    description: 'Phase 1 minimal backend for scheduling emails',
+    version: '2.0.0',
+    description: 'Full-stack Email Scheduler backend with Google OAuth & BullMQ',
     endpoints: {
-      health: 'GET /health or GET /api/health',
-      scheduleEmail: 'POST /api/emails',
+      health: 'GET /health',
+      authGoogle: 'GET /api/auth/google',
+      authMe: 'GET /api/auth/me',
+      authLogout: 'POST /api/auth/logout',
+      emails: 'GET /api/emails, POST /api/emails',
     },
   });
 });
 
-// Health check endpoints (available at both root and /api)
+// 7. Route Handlers
 app.use('/', healthRoutes);
 app.use('/api', healthRoutes);
-
-// Email scheduler API routes
+app.use('/api/auth', authRoutes);
 app.use('/api', emailRoutes);
 
-// Catch-all 404 handler for undefined routes
+// 8. Catch-all 404 handler
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
@@ -38,9 +79,8 @@ app.use((req: Request, res: Response) => {
   });
 });
 
-// Global error handling middleware (handles malformed JSON, etc.)
+// 9. Global error handling middleware
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  // Check if it's a JSON parse error from express.json()
   if ('status' in err && (err as { status?: number }).status === 400 && 'body' in err) {
     res.status(400).json({
       success: false,
