@@ -18,6 +18,14 @@ export interface ScheduledEmail {
   updatedAt?: Date | string;
 }
 
+export interface ScheduledEmailWithJob extends ScheduledEmail {
+  job?: {
+    id: string;
+    delayMs: number;
+    delaySeconds: number;
+  };
+}
+
 export interface ValidationErrorDetail {
   field: string;
   message: string;
