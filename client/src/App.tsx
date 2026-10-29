@@ -76,14 +76,14 @@ export const App: React.FC = () => {
     }
   };
 
-  // Handle Dev Login
-  const handleDevLogin = async () => {
+  // Handle Dev / Email Login
+  const handleDevLogin = async (email?: string) => {
     try {
-      const devUser = await api.devLogin();
+      const devUser = await api.devLogin(email);
       setUser(devUser);
       showNotification('success', `Signed in as ${devUser.displayName}`);
     } catch (err: unknown) {
-      showNotification('error', err instanceof Error ? err.message : 'Dev login failed');
+      showNotification('error', err instanceof Error ? err.message : 'Login failed');
     }
   };
 

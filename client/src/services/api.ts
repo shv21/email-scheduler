@@ -42,12 +42,14 @@ export const api = {
     await request('/auth/logout', { method: 'POST' });
   },
 
-  async devLogin(): Promise<User> {
+  async devLogin(email?: string): Promise<User> {
+    const userEmail = email?.trim() || 'alex.developer@gmail.com';
+    const namePrefix = userEmail.split('@')[0] || 'User';
     const res = await request<User>('/auth/dev-login', {
       method: 'POST',
       body: JSON.stringify({
-        email: 'alex.developer@gmail.com',
-        displayName: 'Alex Developer',
+        email: userEmail,
+        displayName: namePrefix.charAt(0).toUpperCase() + namePrefix.slice(1),
         avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
       }),
     });
