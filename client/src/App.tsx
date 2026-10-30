@@ -72,14 +72,22 @@ P.S. Always remember that you can develop world class technique! 🚀`,
 export const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'scheduled' | 'sent'>('scheduled');
+  const [activeTab, setActiveTab] = useState<'scheduled' | 'sent' | 'trash'>('scheduled');
   const [currentView, setCurrentView] = useState<'list' | 'compose' | 'detail'>('list');
   const [selectedEmail, setSelectedEmail] = useState<EmailItem | null>(null);
   const [serverEmails, setServerEmails] = useState<EmailItem[]>([]);
+  const [trashEmails, setTrashEmails] = useState<EmailItem[]>([]);
+  const [trashedIds, setTrashedIds] = useState<Set<string>>(new Set());
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [notification, setNotification] = useState<{
     type: 'success' | 'error';
     message: string;
+  } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    onConfirm: () => Promise<void> | void;
   } | null>(null);
 
   const showNotification = (type: 'success' | 'error', message: string) => {
@@ -103,13 +111,17 @@ export const App: React.FC = () => {
     checkAuth();
   }, []);
 
-  // 2. Fetch authenticated user's emails from server
+  // 2. Fetch authenticated user's emails and trashed emails from server
   const loadEmails = useCallback(async () => {
     if (!user) return;
     try {
       setEmailsLoading(true);
-      const items = await api.getEmails();
+      const [items, trashed] = await Promise.all([
+        api.getEmails(),
+        api.getTrashEmails(),
+      ]);
       setServerEmails(items);
+      setTrashEmails(trashed);
     } catch (err: unknown) {
       console.warn('Could not query database emails:', err);
     } finally {
@@ -126,22 +138,27 @@ export const App: React.FC = () => {
     }
   }, [user, loadEmails]);
 
-  // Combined emails (Server emails + seeded mock emails for exact screenshot matching)
+  // Combined active emails (Server emails + seeded mock emails for exact screenshot matching)
   const combinedEmails = useMemo(() => {
     const serverIds = new Set(serverEmails.map((e) => e.id));
-    const uniqueDemos = INITIAL_DEMO_EMAILS.filter((e) => !serverIds.has(e.id));
+    const uniqueDemos = INITIAL_DEMO_EMAILS.filter(
+      (e) => !serverIds.has(e.id) && !trashedIds.has(e.id)
+    );
     return [...serverEmails, ...uniqueDemos];
-  }, [serverEmails]);
+  }, [serverEmails, trashedIds]);
 
   // Counts (matching Screenshot counts: 12 Scheduled, 785 Sent, or real server counts)
   const scheduledCount = Math.max(
     12,
-    combinedEmails.filter((e) => e.status === 'SCHEDULED' || e.status === 'PROCESSING').length
+    combinedEmails.filter(
+      (e) => !e.deletedAt && (e.status === 'SCHEDULED' || e.status === 'PROCESSING')
+    ).length
   );
   const sentCount = Math.max(
     785,
-    combinedEmails.filter((e) => e.status === 'SENT').length
+    combinedEmails.filter((e) => !e.deletedAt && e.status === 'SENT').length
   );
+  const trashCount = trashEmails.length;
 
   // Handle Logout
   const handleLogout = async () => {
@@ -149,6 +166,8 @@ export const App: React.FC = () => {
       await api.logout();
       setUser(null);
       setServerEmails([]);
+      setTrashEmails([]);
+      setTrashedIds(new Set());
       showNotification('success', 'Logged out successfully');
     } catch (err: unknown) {
       showNotification('error', err instanceof Error ? err.message : 'Logout failed');
@@ -197,6 +216,138 @@ export const App: React.FC = () => {
     }
   };
 
+  // Handle Soft Delete (Move to Trash)
+  const handleMoveToTrash = async (id: string) => {
+    try {
+      const targetEmail =
+        combinedEmails.find((e) => e.id === id) ||
+        (selectedEmail?.id === id ? selectedEmail : null);
+
+      if (!id.startsWith('mock_') && !id.startsWith('local_')) {
+        await api.moveToTrash(id);
+      }
+
+      setServerEmails((prev) => prev.filter((e) => e.id !== id));
+      setTrashedIds((prev) => new Set(prev).add(id));
+
+      if (targetEmail) {
+        setTrashEmails((prev) => [
+          { ...targetEmail, deletedAt: new Date().toISOString() },
+          ...prev.filter((e) => e.id !== id),
+        ]);
+      }
+
+      if (selectedEmail?.id === id) {
+        setSelectedEmail(null);
+        setCurrentView('list');
+      }
+      showNotification('success', 'Email moved to trash');
+    } catch (err: unknown) {
+      showNotification(
+        'error',
+        err instanceof Error ? err.message : 'Failed to move email to trash'
+      );
+    }
+  };
+
+  // Handle Restore
+  const handleRestore = async (emailOrId: EmailItem | string) => {
+    const id = typeof emailOrId === 'string' ? emailOrId : emailOrId.id;
+    try {
+      let restoredItem: EmailItem | undefined;
+      if (!id.startsWith('mock_') && !id.startsWith('local_')) {
+        restoredItem = await api.restoreEmail(id);
+      } else {
+        const found = trashEmails.find((e) => e.id === id);
+        if (found) {
+          restoredItem = { ...found, deletedAt: null };
+        }
+      }
+
+      setTrashEmails((prev) => prev.filter((e) => e.id !== id));
+      setTrashedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+
+      if (restoredItem) {
+        setServerEmails((prev) => [restoredItem!, ...prev.filter((e) => e.id !== id)]);
+        if (selectedEmail?.id === id) {
+          setSelectedEmail(restoredItem);
+        }
+      }
+
+      showNotification('success', 'Email restored successfully');
+    } catch (err: unknown) {
+      showNotification(
+        'error',
+        err instanceof Error ? err.message : 'Failed to restore email'
+      );
+    }
+  };
+
+  // Handle Permanent Delete
+  const handlePermanentDelete = (emailOrId: EmailItem | string) => {
+    const id = typeof emailOrId === 'string' ? emailOrId : emailOrId.id;
+    setConfirmDialog({
+      title: 'Permanently delete email?',
+      message:
+        'This will permanently remove the email from PostgreSQL and Elasticsearch. This action cannot be undone.',
+      confirmLabel: 'Delete Permanently',
+      onConfirm: async () => {
+        try {
+          if (!id.startsWith('mock_') && !id.startsWith('local_')) {
+            await api.permanentDeleteEmail(id);
+          }
+          setTrashEmails((prev) => prev.filter((e) => e.id !== id));
+          setTrashedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+          if (selectedEmail?.id === id) {
+            setSelectedEmail(null);
+            setCurrentView('list');
+          }
+          showNotification('success', 'Email permanently deleted');
+        } catch (err: unknown) {
+          showNotification(
+            'error',
+            err instanceof Error ? err.message : 'Failed to permanently delete email'
+          );
+        }
+      },
+    });
+  };
+
+  // Handle Empty Trash
+  const handleEmptyTrash = () => {
+    setConfirmDialog({
+      title: 'Empty Trash?',
+      message:
+        'Are you sure you want to permanently delete all emails in the trash? This cannot be undone.',
+      confirmLabel: 'Empty Trash',
+      onConfirm: async () => {
+        try {
+          await api.emptyTrash();
+          setTrashEmails([]);
+          setTrashedIds(new Set());
+          if (selectedEmail?.deletedAt) {
+            setSelectedEmail(null);
+            setCurrentView('list');
+          }
+          showNotification('success', 'Trash emptied successfully');
+        } catch (err: unknown) {
+          showNotification(
+            'error',
+            err instanceof Error ? err.message : 'Failed to empty trash'
+          );
+        }
+      },
+    });
+  };
+
   // Handle Email Row Click -> View details
   const handleSelectEmail = (email: EmailItem) => {
     setSelectedEmail(email);
@@ -235,6 +386,7 @@ export const App: React.FC = () => {
         onLogout={handleLogout}
         scheduledCount={scheduledCount}
         sentCount={sentCount}
+        trashCount={trashCount}
       />
 
       {/* Main View Area */}
@@ -259,6 +411,47 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {/* Confirmation Modal */}
+        {confirmDialog && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-100 transform transition-all">
+              <div className="flex items-start space-x-3.5 mb-4">
+                <div className="p-2.5 rounded-full bg-rose-50 text-rose-600 shrink-0">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-900">
+                    {confirmDialog.title}
+                  </h3>
+                  <p className="text-sm text-gray-500 mt-1 leading-relaxed">
+                    {confirmDialog.message}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center justify-end space-x-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDialog(null)}
+                  className="px-4 py-2 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const cb = confirmDialog.onConfirm;
+                    setConfirmDialog(null);
+                    await cb();
+                  }}
+                  className="px-4 py-2 rounded-xl text-sm font-semibold text-white bg-rose-600 hover:bg-rose-700 transition-colors cursor-pointer shadow-sm"
+                >
+                  {confirmDialog.confirmLabel || 'Confirm'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* View Switcher: List, Compose, or Detail */}
         {currentView === 'compose' ? (
           <ComposeView
@@ -271,19 +464,26 @@ export const App: React.FC = () => {
             email={selectedEmail}
             user={user}
             onBack={() => setCurrentView('list')}
-            onDelete={(id) => {
-              setServerEmails((prev) => prev.filter((e) => e.id !== id));
-              setCurrentView('list');
-              showNotification('success', 'Email moved to trash');
-            }}
+            onDelete={handleMoveToTrash}
+            onRestore={handleRestore}
+            onPermanentDelete={handlePermanentDelete}
           />
         ) : (
           <EmailList
-            emails={combinedEmails}
+            emails={activeTab === 'trash' ? trashEmails : combinedEmails}
             activeTab={activeTab}
             onSelectEmail={handleSelectEmail}
             onRefresh={loadEmails}
             loading={emailsLoading}
+            onRestore={(email, e) => {
+              e.stopPropagation();
+              handleRestore(email);
+            }}
+            onPermanentDelete={(email, e) => {
+              e.stopPropagation();
+              handlePermanentDelete(email);
+            }}
+            onEmptyTrash={handleEmptyTrash}
           />
         )}
       </div>

@@ -8,11 +8,14 @@ import {
   EmailStatusType,
 } from '../types/email.types';
 import prisma from '../lib/prisma';
-import { addEmailToQueue } from '../queues/email.queue';
+import { addEmailToQueue, cancelEmailJobs } from '../queues/email.queue';
 import {
   indexEmailDocument,
   searchEmailsInIndex,
+  updateEmailDeletedAtInIndex,
+  deleteEmailDocumentFromIndex,
 } from '../services/elasticsearch.service';
+
 
 /**
  * POST /api/emails
@@ -163,6 +166,7 @@ export const createScheduledEmail = async (
 /**
  * GET /api/emails
  * Lists emails belonging to the authenticated user.
+ * Filters out trashed emails (deletedAt: null).
  * Supports optional ?status=SCHEDULED | SENT | PROCESSING | FAILED query param.
  */
 export const getUserEmails = async (
@@ -176,7 +180,10 @@ export const getUserEmails = async (
     const whereClause: {
       userId?: string;
       status?: EmailStatusType;
-    } = {};
+      deletedAt: null;
+    } = {
+      deletedAt: null,
+    };
 
     if (userId) {
       whereClause.userId = userId;
@@ -215,6 +222,337 @@ export const getUserEmails = async (
     res.status(500).json({
       success: false,
       message: 'Failed to retrieve user emails',
+    });
+  }
+};
+
+/**
+ * GET /api/emails/trash
+ * Lists soft-deleted emails for the authenticated user.
+ */
+export const getTrashedEmails = async (
+  req: Request,
+  res: Response<ApiSuccessResponse<ScheduledEmail[]> | ApiErrorResponse>
+): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+
+    const whereClause: {
+      userId?: string;
+      deletedAt: { not: null };
+    } = {
+      deletedAt: { not: null },
+    };
+
+    if (userId) {
+      whereClause.userId = userId;
+    }
+
+    const emails = await prisma.email.findMany({
+      where: whereClause,
+      orderBy: { deletedAt: 'desc' },
+    });
+
+    res.status(200).json({
+      success: true,
+      count: emails.length,
+      data: emails,
+    });
+  } catch (error: unknown) {
+    console.error('❌ Error in getTrashedEmails:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve trashed emails',
+    });
+  }
+};
+
+/**
+ * DELETE /api/emails/:id
+ * Moves an email to Trash (soft delete).
+ * Checks ownership, sets deletedAt to now, cancels pending BullMQ jobs, and updates Elasticsearch.
+ */
+export const softDeleteEmail = async (
+  req: Request,
+  res: Response<ApiSuccessResponse<ScheduledEmail> | ApiErrorResponse>
+): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    // 1. Verify existence & ownership
+    const email = await prisma.email.findFirst({
+      where: {
+        id,
+        ...(userId ? { userId } : {}),
+      },
+    });
+
+    if (!email) {
+      res.status(404).json({
+        success: false,
+        message: 'Email not found or you do not have permission to delete it',
+      });
+      return;
+    }
+
+    if (email.deletedAt !== null) {
+      res.status(200).json({
+        success: true,
+        message: 'Email is already in trash',
+        data: email,
+      });
+      return;
+    }
+
+    const now = new Date();
+
+    // 2. Soft delete in PostgreSQL (source of truth)
+    const updatedEmail = await prisma.email.update({
+      where: { id },
+      data: { deletedAt: now },
+    });
+
+    // 3. Cancel any pending/delayed BullMQ jobs for this email
+    try {
+      await cancelEmailJobs(id);
+    } catch (queueErr) {
+      console.warn(`⚠️ [BullMQ] Error cancelling jobs for email ${id}:`, queueErr);
+    }
+
+    // 4. Update Elasticsearch index (non-blocking)
+    updateEmailDeletedAtInIndex(id, now).catch((esErr) => {
+      console.warn(`⚠️ [Elasticsearch] Failed to update deletedAt for email ${id}:`, esErr);
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Email moved to trash successfully',
+      data: updatedEmail,
+    });
+  } catch (error: unknown) {
+    console.error('❌ Error in softDeleteEmail:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to move email to trash',
+    });
+  }
+};
+
+/**
+ * POST /api/emails/:id/restore
+ * Restores a soft-deleted email from Trash.
+ * Sets deletedAt to null while preserving its original status.
+ * Re-enqueues future scheduled emails into BullMQ if needed.
+ */
+export const restoreEmail = async (
+  req: Request,
+  res: Response<ApiSuccessResponse<ScheduledEmail> | ApiErrorResponse>
+): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    // 1. Verify existence & ownership
+    const email = await prisma.email.findFirst({
+      where: {
+        id,
+        ...(userId ? { userId } : {}),
+      },
+    });
+
+    if (!email) {
+      res.status(404).json({
+        success: false,
+        message: 'Email not found or you do not have permission to restore it',
+      });
+      return;
+    }
+
+    if (!email.deletedAt) {
+      res.status(400).json({
+        success: false,
+        message: 'Email is not in trash',
+      });
+      return;
+    }
+
+    // 2. Clear deletedAt in PostgreSQL (source of truth)
+    const restoredEmail = await prisma.email.update({
+      where: { id },
+      data: { deletedAt: null },
+    });
+
+    // 3. If email status is SCHEDULED and scheduledAt is in the future, re-enqueue into BullMQ
+    if (restoredEmail.status === 'SCHEDULED') {
+      const scheduledTime = new Date(restoredEmail.scheduledAt).getTime();
+      const delayMs = Math.max(0, scheduledTime - Date.now());
+      if (scheduledTime > Date.now()) {
+        try {
+          await addEmailToQueue(
+            {
+              emailId: restoredEmail.id,
+              sender: restoredEmail.sender,
+              recipient: restoredEmail.recipient,
+              subject: restoredEmail.subject,
+              body: restoredEmail.body,
+              scheduledAt: restoredEmail.scheduledAt.toISOString(),
+            },
+            delayMs
+          );
+          console.log(`🔄 [Restore] Re-enqueued restored scheduled email ${id} (delay: ${delayMs}ms)`);
+        } catch (queueErr) {
+          console.warn(`⚠️ [Restore] Could not re-enqueue restored email ${id}:`, queueErr);
+        }
+      }
+    }
+
+    // 4. Update Elasticsearch index (non-blocking)
+    updateEmailDeletedAtInIndex(id, null).catch((esErr) => {
+      console.warn(`⚠️ [Elasticsearch] Failed to clear deletedAt for email ${id}:`, esErr);
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Email restored successfully',
+      data: restoredEmail,
+    });
+  } catch (error: unknown) {
+    console.error('❌ Error in restoreEmail:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to restore email',
+    });
+  }
+};
+
+/**
+ * DELETE /api/emails/:id/permanent
+ * Permanently removes an email from PostgreSQL and Elasticsearch.
+ * Only allowed for emails that are already in Trash.
+ */
+export const permanentDeleteEmail = async (
+  req: Request,
+  res: Response<ApiSuccessResponse<{ id: string }> | ApiErrorResponse>
+): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    // 1. Verify existence & ownership
+    const email = await prisma.email.findFirst({
+      where: {
+        id,
+        ...(userId ? { userId } : {}),
+      },
+    });
+
+    if (!email) {
+      res.status(404).json({
+        success: false,
+        message: 'Email not found or you do not have permission to delete it',
+      });
+      return;
+    }
+
+    // Per Part 5: Permanent deletion should only be available from Trash
+    if (!email.deletedAt) {
+      res.status(400).json({
+        success: false,
+        message: 'Email must be moved to Trash before it can be permanently deleted',
+      });
+      return;
+    }
+
+    // 2. Permanently delete from PostgreSQL (source of truth)
+    await prisma.email.delete({
+      where: { id },
+    });
+
+    // 3. Cancel any lingering BullMQ job
+    try {
+      await cancelEmailJobs(id);
+    } catch (queueErr) {
+      console.warn(`⚠️ [BullMQ] Error cancelling jobs for email ${id}:`, queueErr);
+    }
+
+    // 4. Delete document from Elasticsearch (non-blocking)
+    deleteEmailDocumentFromIndex(id).catch((esErr) => {
+      console.warn(`⚠️ [Elasticsearch] Failed to delete document ${id}:`, esErr);
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Email permanently deleted',
+      data: { id },
+    });
+  } catch (error: unknown) {
+    console.error('❌ Error in permanentDeleteEmail:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to permanently delete email',
+    });
+  }
+};
+
+/**
+ * DELETE /api/emails/trash
+ * Permanently removes all trashed emails belonging to the authenticated user.
+ */
+export const emptyTrash = async (
+  req: Request,
+  res: Response<ApiSuccessResponse<{ deletedCount: number }> | ApiErrorResponse>
+): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+
+    // 1. Find all trashed email IDs belonging to this user
+    const trashedEmails = await prisma.email.findMany({
+      where: {
+        ...(userId ? { userId } : {}),
+        deletedAt: { not: null },
+      },
+      select: { id: true },
+    });
+
+    const trashedIds = trashedEmails.map((e) => e.id);
+
+    if (trashedIds.length === 0) {
+      res.status(200).json({
+        success: true,
+        message: 'Trash is already empty',
+        data: { deletedCount: 0 },
+      });
+      return;
+    }
+
+    // 2. Delete from PostgreSQL (source of truth)
+    const deleteResult = await prisma.email.deleteMany({
+      where: {
+        id: { in: trashedIds },
+        ...(userId ? { userId } : {}),
+        deletedAt: { not: null },
+      },
+    });
+
+    // 3. Clean up jobs and Elasticsearch documents (safely handling partial failures)
+    for (const emailId of trashedIds) {
+      cancelEmailJobs(emailId).catch(() => {});
+      deleteEmailDocumentFromIndex(emailId).catch((esErr) => {
+        console.warn(`⚠️ [Elasticsearch] Failed to delete doc ${emailId} during empty trash:`, esErr);
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Trash emptied successfully. Permanently deleted ${deleteResult.count} email(s).`,
+      data: { deletedCount: deleteResult.count },
+    });
+  } catch (error: unknown) {
+    console.error('❌ Error in emptyTrash:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to empty trash',
     });
   }
 };
@@ -259,6 +597,7 @@ export const getEmailById = async (
   }
 };
 
+
 /**
  * GET /api/emails/search
  * Protected search endpoint leveraging Elasticsearch.
@@ -276,6 +615,7 @@ export const searchEmails = async (
     const subject = req.query.subject as string | undefined;
     const status = req.query.status as EmailStatusType | undefined;
     const q = req.query.q as string | undefined;
+    const inTrash = req.query.inTrash === 'true';
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
     const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
 
@@ -296,6 +636,7 @@ export const searchEmails = async (
         subject,
         status,
         q,
+        inTrash,
         limit,
         offset,
       });
@@ -306,7 +647,7 @@ export const searchEmails = async (
         total: searchResult.total,
         count: searchResult.emails.length,
         source: 'elasticsearch',
-        query: { recipient, subject, status, q },
+        query: { recipient, subject, status, q, inTrash },
       });
       return;
     } catch (esError) {
@@ -319,6 +660,7 @@ export const searchEmails = async (
       const whereClause: {
         userId?: string;
         status?: EmailStatusType;
+        deletedAt?: { not: null } | null;
         recipient?: { contains: string; mode?: 'insensitive' };
         subject?: { contains: string; mode?: 'insensitive' };
         OR?: Array<
@@ -326,7 +668,9 @@ export const searchEmails = async (
           | { recipient: { contains: string; mode?: 'insensitive' } }
           | { body: { contains: string; mode?: 'insensitive' } }
         >;
-      } = {};
+      } = {
+        deletedAt: inTrash ? { not: null } : null,
+      };
 
       if (userId) {
         whereClause.userId = userId;
@@ -362,7 +706,7 @@ export const searchEmails = async (
         count: dbEmails.length,
         source: 'database_fallback',
         warning: 'Elasticsearch unavailable; results retrieved from PostgreSQL source of truth',
-        query: { recipient, subject, status, q },
+        query: { recipient, subject, status, q, inTrash },
       });
     }
   } catch (error: unknown) {
@@ -373,4 +717,5 @@ export const searchEmails = async (
     });
   }
 };
+
 

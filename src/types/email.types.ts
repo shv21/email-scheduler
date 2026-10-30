@@ -18,6 +18,7 @@ export interface ScheduledEmail {
   status: EmailStatusType;
   createdAt: Date | string;
   updatedAt?: Date | string;
+  deletedAt?: Date | string | null;
   userId?: string | null;
 }
 
@@ -62,6 +63,7 @@ export interface EmailDocument {
   scheduledAt: string;
   createdAt: string;
   updatedAt: string;
+  deletedAt?: string | null;
 }
 
 export interface EmailSearchParams {
@@ -70,7 +72,9 @@ export interface EmailSearchParams {
   subject?: string;
   status?: EmailStatusType;
   userId?: string;
+  inTrash?: boolean;
   limit?: number;
   offset?: number;
 }
+
 

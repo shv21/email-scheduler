@@ -1,16 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { User } from '../types';
 import { OngLogo } from './OngLogo';
-import { Clock, Send, ChevronDown, LogOut } from 'lucide-react';
+import { Clock, Send, Trash2, ChevronDown, LogOut } from 'lucide-react';
 
 interface SidebarProps {
   user: User;
-  activeTab: 'scheduled' | 'sent';
-  onTabChange: (tab: 'scheduled' | 'sent') => void;
+  activeTab: 'scheduled' | 'sent' | 'trash';
+  onTabChange: (tab: 'scheduled' | 'sent' | 'trash') => void;
   onOpenCompose: () => void;
   onLogout: () => void;
   scheduledCount: number;
   sentCount: number;
+  trashCount: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -21,6 +22,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   scheduledCount,
   sentCount,
+  trashCount,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -179,6 +181,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }`}
           >
             {sentCount}
+          </span>
+        </button>
+
+        {/* Trash Tab */}
+        <button
+          type="button"
+          onClick={() => onTabChange('trash')}
+          className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm transition-all cursor-pointer ${
+            activeTab === 'trash'
+              ? 'bg-[#fee2e2]/60 text-red-900 font-bold'
+              : 'text-gray-600 hover:bg-gray-50 font-medium'
+          }`}
+        >
+          <div className="flex items-center space-x-3">
+            <Trash2
+              className={`w-4 h-4 shrink-0 ${
+                activeTab === 'trash' ? 'text-red-700' : 'text-gray-500'
+              }`}
+            />
+            <span>Trash</span>
+          </div>
+          <span
+            className={`text-xs ${
+              activeTab === 'trash'
+                ? 'text-red-700 font-semibold'
+                : 'text-gray-400 font-normal'
+            }`}
+          >
+            {trashCount}
           </span>
         </button>
       </nav>

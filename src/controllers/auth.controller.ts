@@ -67,7 +67,7 @@ export const devLogin = async (req: Request, res: Response): Promise<void> => {
   const displayName = req.body?.displayName || 'Alex Developer';
   const avatarUrl =
     req.body?.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
-  const googleId = req.body?.googleId || `dev_google_${Buffer.from(email).toString('hex').slice(0, 12)}`;
+  const googleId = req.body?.googleId || `dev_google_${Buffer.from(email).toString('hex')}`;
 
   try {
     const user = await prisma.user.upsert({

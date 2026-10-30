@@ -18,7 +18,9 @@ export interface EmailItem {
   status: EmailStatus;
   createdAt: string;
   updatedAt?: string;
+  deletedAt?: string | null;
   userId?: string | null;
+
   job?: {
     id: string;
     delayMs: number;

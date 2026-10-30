@@ -59,3 +59,25 @@ export async function addEmailToQueue(
 
   return job;
 }
+
+/**
+ * Safely cancels any waiting or delayed BullMQ jobs for an email.
+ * Called when an email is moved to trash or permanently deleted.
+ */
+export async function cancelEmailJobs(emailId: string): Promise<number> {
+  let removedCount = 0;
+  try {
+    const jobs = await emailQueue.getJobs(['delayed', 'waiting', 'prioritized']);
+    for (const job of jobs) {
+      if (job && job.data && job.data.emailId === emailId) {
+        await job.remove();
+        removedCount++;
+        console.log(`🗑️ [BullMQ] Cancelled job ${job.id} for email ${emailId}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️ [BullMQ] Error cancelling jobs for email ${emailId}:`, err);
+  }
+  return removedCount;
+}
+

@@ -110,6 +110,7 @@ async function runAuthTests() {
     console.log('================================================================\n');
   } finally {
     server.close();
+    setTimeout(() => process.exit(0), 100);
   }
 }
 

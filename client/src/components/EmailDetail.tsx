@@ -6,6 +6,7 @@ import {
   Archive,
   Trash2,
   ChevronDown,
+  RotateCcw,
 } from 'lucide-react';
 
 interface EmailDetailProps {
@@ -13,6 +14,8 @@ interface EmailDetailProps {
   user: User;
   onBack: () => void;
   onDelete?: (id: string) => void;
+  onRestore?: (id: string) => void;
+  onPermanentDelete?: (id: string) => void;
 }
 
 export const EmailDetail: React.FC<EmailDetailProps> = ({
@@ -20,6 +23,8 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
   user,
   onBack,
   onDelete,
+  onRestore,
+  onPermanentDelete,
 }) => {
   const [isStarred, setIsStarred] = useState(false);
 
@@ -53,44 +58,101 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
           </h1>
         </div>
 
-        <div className="flex items-center space-x-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => setIsStarred((prev) => !prev)}
-            className="p-1.5 text-gray-400 hover:text-amber-400 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
-            title="Star email"
-          >
-            <Star
-              className={`w-4 h-4 ${
-                isStarred ? 'fill-amber-400 text-amber-400' : 'text-gray-400'
-              }`}
+        {email.deletedAt ? (
+          <div className="flex items-center space-x-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => onRestore && onRestore(email.id)}
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors cursor-pointer"
+              title="Restore to active view"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Restore</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onPermanentDelete && onPermanentDelete(email.id)}
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors cursor-pointer"
+              title="Permanently delete from database"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete Permanently</span>
+            </button>
+            <img
+              src={user.avatarUrl || '/assets/oliver_brown.jpg'}
+              alt={user.displayName || 'User'}
+              className="w-6 h-6 rounded-full object-cover ml-2 ring-1 ring-gray-200"
             />
-          </button>
-          <button
-            type="button"
-            className="p-1.5 text-gray-400 hover:text-gray-700 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
-            title="Archive"
-          >
-            <Archive className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onDelete && onDelete(email.id)}
-            className="p-1.5 text-gray-400 hover:text-rose-600 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
-            title="Delete"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-          <img
-            src={user.avatarUrl || '/assets/oliver_brown.jpg'}
-            alt={user.displayName || 'User'}
-            className="w-6 h-6 rounded-full object-cover ml-2 ring-1 ring-gray-200"
-          />
-        </div>
+          </div>
+        ) : (
+          <div className="flex items-center space-x-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsStarred((prev) => !prev)}
+              className="p-1.5 text-gray-400 hover:text-amber-400 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
+              title="Star email"
+            >
+              <Star
+                className={`w-4 h-4 ${
+                  isStarred ? 'fill-amber-400 text-amber-400' : 'text-gray-400'
+                }`}
+              />
+            </button>
+            <button
+              type="button"
+              className="p-1.5 text-gray-400 hover:text-gray-700 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
+              title="Archive"
+            >
+              <Archive className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onDelete && onDelete(email.id)}
+              className="p-1.5 text-gray-400 hover:text-rose-600 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
+              title="Move to trash"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+            <img
+              src={user.avatarUrl || '/assets/oliver_brown.jpg'}
+              alt={user.displayName || 'User'}
+              className="w-6 h-6 rounded-full object-cover ml-2 ring-1 ring-gray-200"
+            />
+          </div>
+        )}
       </div>
 
       {/* Main Email Reading View */}
       <div className="flex-1 overflow-y-auto px-8 sm:px-14 py-8">
+        {/* Trash Banner if in trash */}
+        {email.deletedAt && (
+          <div className="mb-6 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between">
+            <div className="flex items-center space-x-2 text-xs text-amber-800">
+              <span className="font-semibold">This email is in Trash.</span>
+              <span className="text-amber-600">
+                Deleted on {new Date(email.deletedAt).toLocaleString()}
+              </span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => onRestore && onRestore(email.id)}
+                className="text-xs font-semibold text-emerald-700 hover:underline cursor-pointer"
+              >
+                Restore
+              </button>
+              <span className="text-gray-300">|</span>
+              <button
+                type="button"
+                onClick={() => onPermanentDelete && onPermanentDelete(email.id)}
+                className="text-xs font-semibold text-rose-700 hover:underline cursor-pointer"
+              >
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Sender Info Line */}
         <div className="flex items-start justify-between mb-8">
           <div className="flex items-center space-x-3.5">

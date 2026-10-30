@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
 import { EmailItem } from '../types';
-import { Search, Filter, RotateCw, Clock, Star } from 'lucide-react';
+import { Search, Filter, RotateCw, Clock, Star, Trash2, RotateCcw } from 'lucide-react';
 
 interface EmailListProps {
   emails: EmailItem[];
-  activeTab: 'scheduled' | 'sent';
+  activeTab: 'scheduled' | 'sent' | 'trash';
   onSelectEmail: (email: EmailItem) => void;
   onRefresh: () => void;
   loading: boolean;
+  onRestore?: (email: EmailItem, e: React.MouseEvent) => void;
+  onPermanentDelete?: (email: EmailItem, e: React.MouseEvent) => void;
+  onEmptyTrash?: () => void;
 }
 
 export const EmailList: React.FC<EmailListProps> = ({
@@ -16,6 +19,9 @@ export const EmailList: React.FC<EmailListProps> = ({
   onSelectEmail,
   onRefresh,
   loading,
+  onRestore,
+  onPermanentDelete,
+  onEmptyTrash,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [starredIds, setStarredIds] = useState<Record<string, boolean>>({});
@@ -30,12 +36,17 @@ export const EmailList: React.FC<EmailListProps> = ({
 
   // Filter based on active tab and search query
   const filteredEmails = emails.filter((email) => {
-    const isScheduledTab = activeTab === 'scheduled';
-    const matchesTab = isScheduledTab
-      ? email.status === 'SCHEDULED' || email.status === 'PROCESSING'
-      : email.status === 'SENT';
+    if (activeTab === 'trash') {
+      if (!email.deletedAt) return false;
+    } else {
+      if (email.deletedAt) return false;
+      const isScheduledTab = activeTab === 'scheduled';
+      const matchesTab = isScheduledTab
+        ? email.status === 'SCHEDULED' || email.status === 'PROCESSING'
+        : email.status === 'SENT';
 
-    if (!matchesTab) return false;
+      if (!matchesTab) return false;
+    }
 
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
@@ -49,7 +60,6 @@ export const EmailList: React.FC<EmailListProps> = ({
   const formatScheduledTime = (dateStr: string) => {
     try {
       const date = new Date(dateStr);
-      // Format as "Tue 9:15:12 AM" or similar matching screenshot
       const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
       const timePart = date.toLocaleTimeString('en-US', {
         hour: 'numeric',
@@ -58,6 +68,21 @@ export const EmailList: React.FC<EmailListProps> = ({
         hour12: true,
       });
       return `${dayName} ${timePart}`;
+    } catch {
+      return dateStr;
+    }
+  };
+
+  const formatDeletedDate = (dateStr?: string | null) => {
+    if (!dateStr) return '';
+    try {
+      const date = new Date(dateStr);
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
     } catch {
       return dateStr;
     }
@@ -76,10 +101,24 @@ export const EmailList: React.FC<EmailListProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search"
+            placeholder={activeTab === 'trash' ? 'Search trash' : 'Search'}
             className="w-full pl-10 pr-4 py-2 bg-[#f3f5f4] hover:bg-[#eef1f0] focus:bg-white text-gray-800 placeholder:text-gray-400 text-sm rounded-full border border-transparent focus:border-gray-200 focus:outline-none transition-all"
           />
         </div>
+
+        {/* Empty Trash Button (when on Trash tab) */}
+        {activeTab === 'trash' && onEmptyTrash && (
+          <button
+            type="button"
+            onClick={onEmptyTrash}
+            title="Empty entire trash"
+            disabled={filteredEmails.length === 0}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-40 disabled:hover:bg-rose-50 rounded-full border border-rose-200 transition-colors cursor-pointer"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+            <span>Empty Trash</span>
+          </button>
+        )}
 
         {/* Filter (Funnel) Button */}
         <button
@@ -111,10 +150,14 @@ export const EmailList: React.FC<EmailListProps> = ({
                 ? `No emails match "${searchQuery}"`
                 : activeTab === 'scheduled'
                 ? 'No scheduled emails in your queue'
-                : 'No sent emails found'}
+                : activeTab === 'sent'
+                ? 'No sent emails found'
+                : 'Trash is empty'}
             </p>
             <p className="text-xs text-gray-400 mt-1">
-              Click Compose on the sidebar to create and schedule your next email.
+              {activeTab === 'trash'
+                ? 'Deleted emails will be kept here until permanently deleted or emptied.'
+                : 'Click Compose on the sidebar to create and schedule your next email.'}
             </p>
           </div>
         ) : (
@@ -139,16 +182,33 @@ export const EmailList: React.FC<EmailListProps> = ({
                 </div>
 
                 {/* Column 2: Status Pill */}
-                <div className="shrink-0 mr-4">
+                <div className="shrink-0 mr-4 flex items-center space-x-2">
                   {activeTab === 'scheduled' ? (
                     <div className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-[#fff1e5] text-[#d95c14] text-xs font-medium">
                       <Clock className="w-3.5 h-3.5 shrink-0 text-[#d95c14]" />
                       <span>{formatScheduledTime(email.scheduledAt)}</span>
                     </div>
-                  ) : (
+                  ) : activeTab === 'sent' ? (
                     <div className="inline-flex items-center px-3 py-0.5 rounded-full bg-[#f0f2f1] text-gray-600 text-xs font-medium">
                       Sent
                     </div>
+                  ) : (
+                    <>
+                      <div
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          email.status === 'SENT'
+                            ? 'bg-[#f0f2f1] text-gray-600'
+                            : 'bg-[#fff1e5] text-[#d95c14]'
+                        }`}
+                      >
+                        {email.status}
+                      </div>
+                      {email.deletedAt && (
+                        <div className="text-[11px] text-gray-400 font-normal">
+                          Deleted {formatDeletedDate(email.deletedAt)}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
 
@@ -162,18 +222,39 @@ export const EmailList: React.FC<EmailListProps> = ({
                   </span>
                 </div>
 
-                {/* Column 4: Star Icon */}
-                <button
-                  type="button"
-                  onClick={(e) => toggleStar(email.id, e)}
-                  className="shrink-0 p-1 text-gray-300 hover:text-amber-400 transition-colors cursor-pointer"
-                >
-                  <Star
-                    className={`w-4 h-4 ${
-                      isStarred ? 'fill-amber-400 text-amber-400' : 'text-gray-300'
-                    }`}
-                  />
-                </button>
+                {/* Column 4: Row Actions */}
+                {activeTab === 'trash' ? (
+                  <div className="shrink-0 flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={(e) => onRestore && onRestore(email, e)}
+                      title="Restore email"
+                      className="p-1.5 text-gray-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => onPermanentDelete && onPermanentDelete(email, e)}
+                      title="Delete permanently"
+                      className="p-1.5 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => toggleStar(email.id, e)}
+                    className="shrink-0 p-1 text-gray-300 hover:text-amber-400 transition-colors cursor-pointer"
+                  >
+                    <Star
+                      className={`w-4 h-4 ${
+                        isStarred ? 'fill-amber-400 text-amber-400' : 'text-gray-300'
+                      }`}
+                    />
+                  </button>
+                )}
               </div>
             );
           })

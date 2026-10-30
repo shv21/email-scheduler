@@ -17,20 +17,61 @@ let emailWorker: Worker<EmailJobData> | null = null;
  * 3. Exactly-once Slack alert per hourly window
  * 4. Safe email dispatch via Ethereal
  */
-export function startEmailWorker(): Worker<EmailJobData> {
-  if (emailWorker) return emailWorker;
+/**
+ * Standalone processor function for email jobs.
+ * Enforces Part 7 worker safety guarantees:
+ * 1. Verifies email existence
+ * 2. Skips trashed emails
+ * 3. Atomic status check before dispatch
+ */
+export async function processEmailJob(job: { id?: string; data: EmailJobData }) {
+  const { emailId, sender, recipient, subject, body } = job.data;
+  const effectiveSender = sender || 'default-sender@example.com';
 
-  console.log(`👷 Starting BullMQ worker for queue [${EMAIL_QUEUE_NAME}]...`);
+  console.log(
+    `\n⏳ [Worker] Processing email job ${job.id || 'direct'} | Email ID: ${emailId} | Sender: ${effectiveSender} | Recipient: ${recipient}`
+  );
 
-  emailWorker = new Worker<EmailJobData>(
-    EMAIL_QUEUE_NAME,
-    async (job: Job<EmailJobData>) => {
-      const { emailId, sender, recipient, subject, body } = job.data;
-      const effectiveSender = sender || 'default-sender@example.com';
+      // Part 7 Safety Check 1: Verify email exists in PostgreSQL
+      const emailRecord = await prisma.email.findUnique({
+        where: { id: emailId },
+      });
 
-      console.log(
-        `\n⏳ [Worker] Processing email job ${job.id} | Email ID: ${emailId} | Sender: ${effectiveSender} | Recipient: ${recipient}`
-      );
+      if (!emailRecord) {
+        console.warn(
+          `⚠️ [Worker] Email ${emailId} does not exist in database (permanently deleted). Skipping job.`
+        );
+        return {
+          skipped: true,
+          reason: 'EMAIL_NOT_FOUND',
+          emailId,
+        };
+      }
+
+      // Part 7 Safety Check 2: Check whether email is in Trash (deletedAt is not null)
+      if (emailRecord.deletedAt !== null) {
+        console.warn(
+          `🛑 [Worker] Email ${emailId} is in Trash (deletedAt: ${emailRecord.deletedAt.toISOString()}). Delivery cancelled.`
+        );
+        return {
+          skipped: true,
+          reason: 'EMAIL_IN_TRASH',
+          emailId,
+          deletedAt: emailRecord.deletedAt.toISOString(),
+        };
+      }
+
+      // Safety Check 3: Check if already sent
+      if (emailRecord.status === 'SENT') {
+        console.log(
+          `ℹ️ [Worker] Email ${emailId} is already marked as SENT. Skipping duplicate dispatch.`
+        );
+        return {
+          skipped: true,
+          reason: 'ALREADY_SENT',
+          emailId,
+        };
+      }
 
       // 1. Check Redis per-sender hourly rate limit
       const rateLimit = await checkSenderRateLimit(effectiveSender);
@@ -63,10 +104,10 @@ export function startEmailWorker(): Worker<EmailJobData> {
           )}m (${rateLimit.retryAfterSeconds}s) at ${nextAttemptDate.toISOString()}.`
         );
 
-        // Update PostgreSQL record to reflect rescheduled timestamp
+        // Update PostgreSQL record to reflect rescheduled timestamp (only if not deleted)
         try {
-          await prisma.email.update({
-            where: { id: emailId },
+          await prisma.email.updateMany({
+            where: { id: emailId, deletedAt: null },
             data: {
               status: 'SCHEDULED',
               scheduledAt: nextAttemptDate,
@@ -93,18 +134,30 @@ export function startEmailWorker(): Worker<EmailJobData> {
         };
       }
 
-      // 4. Rate limit check passed: Mark DB record as PROCESSING
+      // 4. Rate limit check passed: Mark DB record as PROCESSING ensuring it is not trashed
       try {
-        await prisma.email.update({
-          where: { id: emailId },
+        const updateResult = await prisma.email.updateMany({
+          where: { id: emailId, deletedAt: null },
           data: { status: 'PROCESSING' },
         });
+
+        if (updateResult.count === 0) {
+          console.warn(
+            `🛑 [Worker] Email ${emailId} was trashed or removed while awaiting dispatch. Aborting.`
+          );
+          return {
+            skipped: true,
+            reason: 'TRASHED_BEFORE_DISPATCH',
+            emailId,
+          };
+        }
       } catch (dbErr) {
         console.warn(`⚠️ [Worker] Could not update status to PROCESSING for ${emailId}:`, dbErr);
       }
 
       // Update status in Elasticsearch (non-blocking)
       await updateEmailStatusInIndex(emailId, 'PROCESSING');
+
 
       // 5. Dispatch email via Nodemailer & Ethereal
       try {
@@ -144,7 +197,19 @@ export function startEmailWorker(): Worker<EmailJobData> {
 
         throw sendErr; // rethrow to trigger BullMQ retry/backoff
       }
-    },
+}
+
+/**
+ * Initializes and starts the BullMQ worker for processing delayed email jobs.
+ */
+export function startEmailWorker(): Worker<EmailJobData> {
+  if (emailWorker) return emailWorker;
+
+  console.log(`👷 Starting BullMQ worker for queue [${EMAIL_QUEUE_NAME}]...`);
+
+  emailWorker = new Worker<EmailJobData>(
+    EMAIL_QUEUE_NAME,
+    (job: Job<EmailJobData>) => processEmailJob(job),
     {
       connection: redisConnectionOptions,
       concurrency: 5,

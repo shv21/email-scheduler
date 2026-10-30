@@ -8,8 +8,11 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
     return next();
   }
 
-  // Provide friendly HTML unauthorized page when accessing web views in a browser
-  if (req.accepts('html') && !req.path.startsWith('/api/') && !req.xhr) {
+  const fullPath = req.originalUrl || req.baseUrl || req.path;
+  const isApiRoute = fullPath.startsWith('/api') || req.xhr;
+
+  // Provide friendly HTML unauthorized page when accessing web views in a browser (e.g. /admin/queues)
+  if (req.accepts('html') && !isApiRoute) {
     const loginUrl = process.env.CLIENT_URL || 'http://localhost:5173';
     res.status(401).send(`
       <!DOCTYPE html>

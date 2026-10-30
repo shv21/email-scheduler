@@ -71,6 +71,11 @@ export const api = {
     return res.data || [];
   },
 
+  async getTrashEmails(): Promise<EmailItem[]> {
+    const res = await request<EmailItem[]>('/emails/trash', { method: 'GET' });
+    return res.data || [];
+  },
+
   async scheduleEmail(payload: ComposeEmailPayload): Promise<EmailItem> {
     const res = await request<EmailItem>('/emails', {
       method: 'POST',
@@ -78,4 +83,33 @@ export const api = {
     });
     return res.data!;
   },
+
+  async moveToTrash(id: string): Promise<EmailItem> {
+    const res = await request<EmailItem>(`/emails/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    return res.data!;
+  },
+
+  async restoreEmail(id: string): Promise<EmailItem> {
+    const res = await request<EmailItem>(`/emails/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
+    });
+    return res.data!;
+  },
+
+  async permanentDeleteEmail(id: string): Promise<{ id: string }> {
+    const res = await request<{ id: string }>(`/emails/${encodeURIComponent(id)}/permanent`, {
+      method: 'DELETE',
+    });
+    return res.data!;
+  },
+
+  async emptyTrash(): Promise<{ deletedCount: number }> {
+    const res = await request<{ deletedCount: number }>('/emails/trash', {
+      method: 'DELETE',
+    });
+    return res.data!;
+  },
 };
+

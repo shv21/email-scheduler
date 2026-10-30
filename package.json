@@ -17,7 +17,8 @@
     "client:build": "npm --prefix client run build",
     "test:auth": "tsx src/tests/test-auth.ts",
     "test:elasticsearch": "tsx src/tests/test-elasticsearch.ts",
-    "test:bullboard": "tsx src/tests/test-bull-board.ts"
+    "test:bullboard": "tsx src/tests/test-bull-board.ts",
+    "test:trash": "tsx src/tests/test-trash-system.ts"
   },
 
   "keywords": [
