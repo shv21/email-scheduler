@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { createRedisClient } from '../config/redis';
+import { checkElasticsearchHealth } from '../config/elasticsearch';
 
 export interface HealthCheckResponse {
   status: 'ok' | 'degraded';
@@ -9,6 +10,7 @@ export interface HealthCheckResponse {
   checks: {
     database: 'connected' | 'disconnected';
     redis: 'connected' | 'disconnected';
+    elasticsearch: 'connected' | 'disconnected';
   };
   timestamp: string;
   environment: string;
@@ -17,6 +19,7 @@ export interface HealthCheckResponse {
 export const getHealth = async (_req: Request, res: Response<HealthCheckResponse>): Promise<void> => {
   let dbStatus: 'connected' | 'disconnected' = 'disconnected';
   let redisStatus: 'connected' | 'disconnected' = 'disconnected';
+  let esStatus: 'connected' | 'disconnected' = 'disconnected';
 
   // 1. Check PostgreSQL
   try {
@@ -42,6 +45,14 @@ export const getHealth = async (_req: Request, res: Response<HealthCheckResponse
     }
   }
 
+  // 3. Check Elasticsearch (non-blocking)
+  try {
+    const isEsAlive = await checkElasticsearchHealth();
+    esStatus = isEsAlive ? 'connected' : 'disconnected';
+  } catch {
+    esStatus = 'disconnected';
+  }
+
   const isHealthy = dbStatus === 'connected' && redisStatus === 'connected';
 
   res.status(200).json({
@@ -51,8 +62,10 @@ export const getHealth = async (_req: Request, res: Response<HealthCheckResponse
     checks: {
       database: dbStatus,
       redis: redisStatus,
+      elasticsearch: esStatus,
     },
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV ?? 'development',
   });
 };
+

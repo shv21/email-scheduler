@@ -15,8 +15,11 @@
     "test:ratelimit": "tsx src/tests/test-rate-limiting.ts",
     "client:dev": "npm --prefix client run dev",
     "client:build": "npm --prefix client run build",
-    "test:auth": "tsx src/tests/test-auth.ts"
+    "test:auth": "tsx src/tests/test-auth.ts",
+    "test:elasticsearch": "tsx src/tests/test-elasticsearch.ts",
+    "test:bullboard": "tsx src/tests/test-bull-board.ts"
   },
+
   "keywords": [
     "email-scheduler",
     "express",
@@ -34,6 +37,9 @@
   "author": "shv21",
   "license": "ISC",
   "dependencies": {
+    "@bull-board/api": "^9.10.5",
+    "@bull-board/express": "^9.10.5",
+    "@elastic/elasticsearch": "^8.19.2",
     "@prisma/client": "^6.4.1",
     "bullmq": "^6.5.1",
     "cookie-parser": "^1.4.7",

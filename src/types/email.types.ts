@@ -39,6 +39,10 @@ export interface ApiSuccessResponse<T> {
   message?: string;
   data: T;
   count?: number;
+  total?: number;
+  source?: 'elasticsearch' | 'database_fallback';
+  warning?: string;
+  query?: Record<string, unknown>;
 }
 
 export interface ApiErrorResponse {
@@ -46,3 +50,27 @@ export interface ApiErrorResponse {
   message: string;
   errors?: ValidationErrorDetail[];
 }
+
+export interface EmailDocument {
+  id: string;
+  userId?: string | null;
+  sender: string;
+  recipient: string;
+  subject: string;
+  body: string;
+  status: EmailStatusType;
+  scheduledAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmailSearchParams {
+  q?: string;
+  recipient?: string;
+  subject?: string;
+  status?: EmailStatusType;
+  userId?: string;
+  limit?: number;
+  offset?: number;
+}
+

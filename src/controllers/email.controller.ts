@@ -9,6 +9,10 @@ import {
 } from '../types/email.types';
 import prisma from '../lib/prisma';
 import { addEmailToQueue } from '../queues/email.queue';
+import {
+  indexEmailDocument,
+  searchEmailsInIndex,
+} from '../services/elasticsearch.service';
 
 /**
  * POST /api/emails
@@ -68,6 +72,22 @@ export const createScheduledEmail = async (
       });
       return;
     }
+
+    // 2b. Asynchronously index email in Elasticsearch (PostgreSQL remains primary source of truth)
+    indexEmailDocument({
+      id: createdEmail.id,
+      sender: createdEmail.sender,
+      recipient: createdEmail.recipient,
+      subject: createdEmail.subject,
+      body: createdEmail.body,
+      scheduledAt: createdEmail.scheduledAt,
+      status: createdEmail.status,
+      createdAt: createdEmail.createdAt,
+      updatedAt: createdEmail.updatedAt,
+      userId: createdEmail.userId,
+    }).catch((esErr) => {
+      console.warn('⚠️ [Elasticsearch] Background index error:', esErr);
+    });
 
     // 3. Calculate delay in milliseconds
     const targetTime = new Date(scheduledAt).getTime();
@@ -238,3 +258,119 @@ export const getEmailById = async (
     });
   }
 };
+
+/**
+ * GET /api/emails/search
+ * Protected search endpoint leveraging Elasticsearch.
+ * Supports searching by recipient email, subject, status, or free-text query (q).
+ * Scoped to authenticated user's ID for tenant isolation.
+ * Gracefully falls back to PostgreSQL if Elasticsearch is temporarily unavailable.
+ */
+export const searchEmails = async (
+  req: Request,
+  res: Response<ApiSuccessResponse<ScheduledEmail[]> | ApiErrorResponse>
+): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    const recipient = req.query.recipient as string | undefined;
+    const subject = req.query.subject as string | undefined;
+    const status = req.query.status as EmailStatusType | undefined;
+    const q = req.query.q as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+    const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+
+    const validStatuses: EmailStatusType[] = ['SCHEDULED', 'PROCESSING', 'SENT', 'FAILED'];
+    if (status && !validStatuses.includes(status)) {
+      res.status(400).json({
+        success: false,
+        message: `Invalid status parameter. Must be one of: ${validStatuses.join(', ')}`,
+      });
+      return;
+    }
+
+    try {
+      // 1. Primary: Elasticsearch Search
+      const searchResult = await searchEmailsInIndex({
+        userId,
+        recipient,
+        subject,
+        status,
+        q,
+        limit,
+        offset,
+      });
+
+      res.status(200).json({
+        success: true,
+        data: searchResult.emails,
+        total: searchResult.total,
+        count: searchResult.emails.length,
+        source: 'elasticsearch',
+        query: { recipient, subject, status, q },
+      });
+      return;
+    } catch (esError) {
+      console.warn(
+        '⚠️ [Elasticsearch] Search query failed, gracefully falling back to PostgreSQL source of truth:',
+        esError instanceof Error ? esError.message : esError
+      );
+
+      // 2. Fallback: PostgreSQL Source of Truth
+      const whereClause: {
+        userId?: string;
+        status?: EmailStatusType;
+        recipient?: { contains: string; mode?: 'insensitive' };
+        subject?: { contains: string; mode?: 'insensitive' };
+        OR?: Array<
+          | { subject: { contains: string; mode?: 'insensitive' } }
+          | { recipient: { contains: string; mode?: 'insensitive' } }
+          | { body: { contains: string; mode?: 'insensitive' } }
+        >;
+      } = {};
+
+      if (userId) {
+        whereClause.userId = userId;
+      }
+      if (status) {
+        whereClause.status = status;
+      }
+      if (recipient) {
+        whereClause.recipient = { contains: recipient, mode: 'insensitive' };
+      }
+      if (subject) {
+        whereClause.subject = { contains: subject, mode: 'insensitive' };
+      }
+      if (q) {
+        whereClause.OR = [
+          { subject: { contains: q, mode: 'insensitive' } },
+          { recipient: { contains: q, mode: 'insensitive' } },
+          { body: { contains: q, mode: 'insensitive' } },
+        ];
+      }
+
+      const dbEmails = await prisma.email.findMany({
+        where: whereClause,
+        orderBy: { scheduledAt: 'desc' },
+        take: limit,
+        skip: offset,
+      });
+
+      res.status(200).json({
+        success: true,
+        data: dbEmails,
+        total: dbEmails.length,
+        count: dbEmails.length,
+        source: 'database_fallback',
+        warning: 'Elasticsearch unavailable; results retrieved from PostgreSQL source of truth',
+        query: { recipient, subject, status, q },
+      });
+    }
+  } catch (error: unknown) {
+    console.error('❌ Error in searchEmails:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to search emails',
+    });
+  }
+};
+

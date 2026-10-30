@@ -5,6 +5,7 @@ import { sendEmail } from '../services/email.service';
 import { checkSenderRateLimit } from '../services/rate-limiter.service';
 import { sendSlackRateLimitAlert } from '../services/slack.service';
 import prisma from '../lib/prisma';
+import { updateEmailStatusInIndex } from '../services/elasticsearch.service';
 
 let emailWorker: Worker<EmailJobData> | null = null;
 
@@ -75,6 +76,11 @@ export function startEmailWorker(): Worker<EmailJobData> {
           console.warn(`⚠️ [Worker] Could not update rescheduled date in DB for ${emailId}:`, dbErr);
         }
 
+        // Update status in Elasticsearch (non-blocking)
+        await updateEmailStatusInIndex(emailId, 'SCHEDULED', {
+          scheduledAt: nextAttemptDate,
+        });
+
         // Re-enqueue into BullMQ with calculated delay
         await addEmailToQueue(job.data, rateLimit.retryAfterMs);
 
@@ -97,6 +103,9 @@ export function startEmailWorker(): Worker<EmailJobData> {
         console.warn(`⚠️ [Worker] Could not update status to PROCESSING for ${emailId}:`, dbErr);
       }
 
+      // Update status in Elasticsearch (non-blocking)
+      await updateEmailStatusInIndex(emailId, 'PROCESSING');
+
       // 5. Dispatch email via Nodemailer & Ethereal
       try {
         const sendResult = await sendEmail({
@@ -112,6 +121,9 @@ export function startEmailWorker(): Worker<EmailJobData> {
           data: { status: 'SENT' },
         });
 
+        // Update status in Elasticsearch (non-blocking)
+        await updateEmailStatusInIndex(emailId, 'SENT');
+
         console.log(`✅ [Worker] Successfully processed and marked email ${emailId} as SENT.`);
         return sendResult;
       } catch (sendErr) {
@@ -126,6 +138,9 @@ export function startEmailWorker(): Worker<EmailJobData> {
         } catch (dbErr) {
           console.warn(`⚠️ [Worker] Could not update status to FAILED for ${emailId}:`, dbErr);
         }
+
+        // Update status in Elasticsearch (non-blocking)
+        await updateEmailStatusInIndex(emailId, 'FAILED');
 
         throw sendErr; // rethrow to trigger BullMQ retry/backoff
       }

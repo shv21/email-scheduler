@@ -7,8 +7,11 @@ import configurePassport from './config/passport';
 import authRoutes from './routes/auth.routes';
 import emailRoutes from './routes/email.routes';
 import healthRoutes from './routes/health.routes';
+import { setupBullBoard } from './config/bull-board';
+import { requireAuth } from './middlewares/auth.middleware';
 
 const app: Application = express();
+
 
 // 1. Initialize Passport Strategies
 configurePassport();
@@ -61,6 +64,8 @@ app.get('/', (_req: Request, res: Response) => {
       authMe: 'GET /api/auth/me',
       authLogout: 'POST /api/auth/logout',
       emails: 'GET /api/emails, POST /api/emails',
+      emailSearch: 'GET /api/emails/search',
+      bullDashboard: 'GET /admin/queues (Protected)',
     },
   });
 });
@@ -70,6 +75,10 @@ app.use('/', healthRoutes);
 app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api', emailRoutes);
+
+// BullMQ Queue Dashboard (Protected by authentication)
+app.use('/admin/queues', requireAuth, setupBullBoard());
+
 
 // 8. Catch-all 404 handler
 app.use((req: Request, res: Response) => {
